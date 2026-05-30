@@ -1,46 +1,39 @@
 #!/usr/bin/env python3
 """
-Electronic Nose Project - Main Pipeline Entry Point
-
-Runs the full pipeline end-to-end:
-  Phase 4: Feature extraction -> master dataset CSV
-  Phase 5: SVM training, evaluation, and model export
+Electronic Nose Project - Pipeline Entry Point
 
 Usage:
-    python main.py                  # Run full pipeline
-    python main.py --phase 4        # Feature extraction only
-    python main.py --phase 5        # Model training only (requires dataset)
+    python main.py                  # Fases 4 + 5
+    python main.py --phase 4        # Solo extracción de características
+    python main.py --phase 5        # Solo entrenamiento (requiere dataset)
 """
 
 import sys
 import argparse
 from pathlib import Path
 
-src_dir = Path(__file__).parent / 'src'
-sys.path.insert(0, str(src_dir))
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from config import PROJECT_ROOT, DATA_RAW_DIR, DATASET_MAESTRO_PATH, DATA_PROCESSED_DIR
-from phase_4_dataset_generation import DatasetGenerator
-from phase_5_model_training import ModelTrainer
+from enose.config import DATA_PROCESSED_DIR, DATA_RAW_DIR, DATASET_MAESTRO_PATH, PROJECT_ROOT
+from enose.pipeline.dataset import DatasetGenerator
+from enose.model.trainer import ModelTrainer
 
 
 def run_phase4() -> bool:
     print("\n" + "=" * 80)
-    print("PHASE 4: Feature Extraction -> Master Dataset".center(80))
+    print("PHASE 4: Feature Extraction → Master Dataset".center(80))
     print("=" * 80)
     try:
-        generator = DatasetGenerator(data_dir=DATA_RAW_DIR)
-        df = generator.generate_dataset(output_path=DATASET_MAESTRO_PATH)
+        df = DatasetGenerator(data_dir=DATA_RAW_DIR).generate_dataset(output_path=DATASET_MAESTRO_PATH)
         if df is not None:
-            print(f"\nDataset generated: {df.shape[0]} samples x {df.shape[1]} features")
-            print(f"Saved to: {DATASET_MAESTRO_PATH}")
+            print(f"\nDataset: {df.shape[0]} muestras × {df.shape[1]} características")
+            print(f"Guardado en: {DATASET_MAESTRO_PATH}")
             return True
-        print("\nERROR: Dataset generation failed")
+        print("\nERROR: Generación de dataset fallida")
         return False
     except Exception as e:
-        print(f"\nERROR in Phase 4: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\nERROR en Fase 4: {e}")
+        import traceback; traceback.print_exc()
         return False
 
 
@@ -49,30 +42,26 @@ def run_phase5() -> bool:
     print("PHASE 5: SVM Training & Evaluation".center(80))
     print("=" * 80)
     try:
-        trainer = ModelTrainer(dataset_path=DATASET_MAESTRO_PATH)
-        success = trainer.train()
-        if success:
-            print(f"\nModel saved to: {DATA_PROCESSED_DIR}")
+        ok = ModelTrainer(dataset_path=DATASET_MAESTRO_PATH).train()
+        if ok:
+            print(f"\nModelo guardado en: {DATA_PROCESSED_DIR}")
             return True
-        print("\nERROR: Model training failed")
+        print("\nERROR: Entrenamiento fallido")
         return False
     except Exception as e:
-        print(f"\nERROR in Phase 5: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\nERROR en Fase 5: {e}")
+        import traceback; traceback.print_exc()
         return False
 
 
 def main():
     parser = argparse.ArgumentParser(description="Electronic Nose Pipeline")
-    parser.add_argument(
-        "--phase", type=int, choices=[4, 5],
-        help="Run only phase 4 (dataset) or phase 5 (training). Omit to run both."
-    )
+    parser.add_argument("--phase", type=int, choices=[4, 5],
+                        help="Fase a ejecutar (omitir = ambas)")
     args = parser.parse_args()
 
     print("=" * 80)
-    print("ELECTRONIC NOSE PROJECT - ML PIPELINE".center(80))
+    print("ELECTRONIC NOSE PROJECT — ML PIPELINE".center(80))
     print("=" * 80)
     print(f"\nProject root : {PROJECT_ROOT}")
     print(f"Raw data     : {DATA_RAW_DIR}")
@@ -94,5 +83,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
