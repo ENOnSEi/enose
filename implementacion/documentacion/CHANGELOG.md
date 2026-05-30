@@ -2,6 +2,44 @@
 
 ---
 
+## V5 — Validación honesta y limpieza de código heredado (2026-05-30)
+
+### Motivación
+Auditoría matemática de las Fases 4 y 5. Se detectaron tres problemas que inflaban
+las métricas o duplicaban lógica con riesgo de data leakage.
+
+### Cambios
+
+**Eliminado: código heredado con data leakage**
+Los módulos planos en `src/` (anteriores a la migración V4) seguían ajustando el PCA
+sobre todo el dataset (train+test) → fuga hacia el test. Se borraron junto con sus
+tests y soportes huérfanos (ya reemplazados por el paquete `enose`):
+- `src/phase_4_dataset_generation.py`, `src/phase_5_model_training.py`
+- `src/phase_1_3_feature_extraction.py`, `src/config.py`, `src/utils.py`
+- `pruebas/test_phase5.py`, `pruebas/test_imports.py`
+
+**Métrica de selección: `accuracy` → `balanced_accuracy`**
+Las clases están desbalanceadas (LQ=141, HQ=51, AQ=43). `accuracy` premiaba el sesgo
+a la clase mayoritaria; `balanced_accuracy` (media de recalls por clase) la sustituye
+en `GridSearchCV`. Se reporta además `test_balanced_accuracy` en los resultados.
+
+**Validación consciente de grupos (corrige optimismo del test)**
+Cada vino-lote se mide ~11 veces (`{Clase}_Wine{NN}-B{BB}_R{RR}.txt`). Hay solo
+**22 vinos independientes** para 235 muestras. El `train_test_split`/`StratifiedKFold`
+anteriores repartían réplicas casi idénticas entre train y test → fuga por grupos
+(test accuracy artificial del 100%). Se sustituyen por `StratifiedGroupKFold` (split
+externo + CV interna), agrupando por vino-lote.
+- Resultado honesto: **Test accuracy ≈ 86% / balanced ≈ 79%** (antes 100% por fuga).
+
+**`SVC(probability=False)`** — evita la CV interna de Platt, innecesaria (las métricas
+usan `predict()`, no `predict_proba()`).
+
+### Comportamiento
+La Fase 4 no cambia. La Fase 5 cambia el esquema de validación (ahora por grupos) y la
+métrica de selección; las métricas reportadas son más bajas pero realistas.
+
+---
+
 ## V4 — Arquitectura Spec → Design → Dev (2026-05-30)
 
 ### Motivación

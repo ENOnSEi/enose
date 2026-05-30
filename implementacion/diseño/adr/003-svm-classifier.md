@@ -16,8 +16,8 @@ El dataset tiene ~235 muestras y ~15-54 features. El objetivo es clasificar
 
 SVM (Support Vector Machine) con:
 - Kernels explorados: `linear` y `rbf`
-- Optimización via `GridSearchCV` + `StratifiedKFold`
-- Pipeline `StandardScaler → SVC` (evita data leakage en el scaler)
+- Optimización via `GridSearchCV` + `StratifiedGroupKFold` (validación por grupos: ninguna réplica del mismo vino-lote en train y test a la vez)
+- Pipeline `PerKeyPCA → StandardScaler → SVC` (PCA y scaler se ajustan solo sobre train en cada fold → sin data leakage)
 
 ## Justificación
 

@@ -36,51 +36,48 @@ Ver todas las opciones:
     python main.py --help
 
 Solo generar dataset (sin entrenar modelo):
-    python main.py --phase-4-only
+    python main.py --phase 4
 
 Solo entrenar modelo (sin generar dataset):
-    python main.py --phase-5-only
+    python main.py --phase 5
     (requiere que dataset_maestro_vinos.csv exista)
-
-Modo verbose (más información de debug):
-    python main.py --verbose
 
 ¿Dónde está cada cosa?
 ======================
 
-MÓDULOS PRINCIPALES:
+El código vive en el paquete src/enose/ (organizado por responsabilidad):
 
-1. config.py
-   └─ Configuración centralizada
+1. enose/config.py
+   └─ Configuración centralizada (dataclasses tipadas)
    └─ Modifica aquí los parámetros del proyecto
 
-2. utils.py
+2. enose/utils.py
    └─ Funciones auxiliares reutilizables
 
-3. phase_1_3_feature_extraction.py
-   └─ Extracción de características (Core del pipeline)
-   └─ Usa: python phase_1_3_feature_extraction.py (demo)
+3. enose/signal/processor.py
+   └─ Procesado de señal (Savitzky-Golay, normalización por línea base, segmentación)
 
-4. phase_4_dataset_generation.py
+4. enose/features/perkey_pca.py
+   └─ PCA por (sensor × ventana) integrado en el Pipeline (sin data leakage)
+
+5. enose/pipeline/dataset.py  (FASE 4)
    └─ Generación del dataset maestro
-   └─ Usa: python phase_4_dataset_generation.py (ejecución independiente)
 
-5. phase_5_model_training.py
-   └─ Entrenamiento del modelo ML
-   └─ Usa: python phase_5_model_training.py (ejecución independiente)
+6. enose/model/trainer.py  (FASE 5)
+   └─ Entrenamiento y evaluación del modelo SVM (validación por grupos)
 
-6. main.py
+7. main.py
    └─ Orquestador del pipeline completo ⭐
    └─ RECOMENDADO: Usar este para ejecutar todo
 
 ¿Cómo importo en mi código?
 ===========================
 
-Para usar en otros scripts:
+Para usar en otros scripts (con src/ en el sys.path, como hace main.py):
 
-    from phase_1_3_feature_extraction import SignalProcessor
-    from phase_4_dataset_generation import DatasetGenerator
-    from phase_5_model_training import ModelTrainer
+    from enose.signal.processor import SignalProcessor
+    from enose.pipeline.dataset import DatasetGenerator
+    from enose.model.trainer import ModelTrainer
 
 Ejemplo:
     processor = SignalProcessor()
@@ -103,19 +100,19 @@ También:
 ¿Necesito cambiar algo?
 ========================
 
-Los parámetros están en config.py:
+Los parámetros están en src/enose/config.py (dataclasses tipadas):
 
-    SIGNAL_PROCESSING = {
-        'sampling_frequency': 18.5,
-        'smoothing_window': 9,
-        'baseline_seconds': 2.0
-    }
+    SignalConfig(
+        sampling_frequency=18.5,
+        savgol_window=15,
+        baseline_seconds=2.0,
+    )
 
-    ML_CONFIG = {
-        'n_splits_cv': 3,
-        'scoring_metric': 'accuracy',
-        'n_jobs': -1
-    }
+    MLConfig(
+        n_splits_cv=3,
+        scoring_metric='balanced_accuracy',   # clases desbalanceadas
+        n_jobs=-1,
+    )
 
     GRID_PARAMS = [...]
 

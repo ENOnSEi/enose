@@ -137,11 +137,27 @@ El GridSearchCV busca los mejores valores de:
 | `C` | Penalización por errores de clasificación. Alto → ajuste fino (riesgo overfitting), bajo → margen amplio (más general) |
 | `gamma` | Radio de influencia de cada muestra en el kernel RBF. Alto → fronteras muy locales, bajo → fronteras suaves |
 
-El grid actual prueba las combinaciones de `C ∈ {0.1, 1, 10, 100}` y `gamma ∈ {scale, auto, 0.1, 0.01}` con una validación cruzada de 3 folds estratificada (misma proporción de clases en cada fold).
+El grid actual prueba las combinaciones de `C ∈ {0.1, 1, 10, 100}` y `gamma ∈ {scale, auto, 0.1, 0.01}` con validación cruzada de 3 folds **por grupos** (`StratifiedGroupKFold`, ver abajo). La métrica que decide el mejor modelo es **`balanced_accuracy`** (media de los recalls por clase), no `accuracy`, porque las clases están desbalanceadas (LQ=141, HQ=51, AQ=43) y `accuracy` premiaría el sesgo a la clase mayoritaria.
 
 ### Por qué StandardScaler entre PCA y SVM
 
 El SVM con kernel RBF es sensible a la escala de las features. Aunque todos los PCs tienen unidades comparables, su magnitud varía. El StandardScaler los lleva todos a media=0, std=1 antes de pasarlos al SVM, asegurando que ninguna componente domine por su escala y no por su información.
+
+---
+
+## Validación por grupos: por qué el test no es 100 %
+
+Cada vino-lote no se mide una sola vez, sino **~11 veces** (réplicas, sufijo `_R01`, `_R02`, … en el nombre de archivo). Aunque hay 235 mediciones, en realidad solo existen **22 vinos independientes**.
+
+Si se hace un split aleatorio normal, las réplicas casi idénticas del mismo vino acaban repartidas entre train y test. El modelo entonces "reconoce" en el test vinos que ya vio en train → memoriza en vez de generalizar, y la accuracy de test sube de forma artificial (llegaba al **100 %**).
+
+La solución es agrupar por vino-lote (`StratifiedGroupKFold`): el identificador de grupo se obtiene del nombre de archivo quitando el sufijo `_R{RR}`, y se garantiza que **ningún vino aparezca a la vez en train y test**, ni en el split externo ni en los folds de la CV. Con esto la métrica refleja la capacidad real de clasificar **vinos nuevos**:
+
+```
+Test accuracy ≈ 86 %   |   balanced accuracy ≈ 79 %
+```
+
+Es más baja que el 100 % anterior, pero es la cifra honesta. Bajar de un 100 % "falso" a un 86 % real **no es empeorar**: es dejar de engañarse.
 
 ---
 
@@ -160,8 +176,11 @@ Para predecir la calidad de una nueva muestra con el modelo entrenado:
 import pickle, pandas as pd
 model = pickle.load(open("datos/procesados/best_model.pkl", "rb"))
 pred = model.predict(nueva_fila_df)   # → ['HQ']
-proba = model.predict_proba(nueva_fila_df)  # → [[0.02, 0.91, 0.07]]
 ```
+
+> El SVM se entrena con `probability=False` (las métricas usan `predict`, no probabilidades),
+> así que `predict_proba` no está disponible. Si necesitas probabilidades, pon
+> `probability=True` en `build_pipeline()` y reentrena.
 
 El PCA, el escalado y la clasificación viajan todos dentro del mismo objeto Pipeline — **no se necesita ningún archivo auxiliar** (el antiguo `pca_transformers.pkl` ya no existe).
 
@@ -178,11 +197,11 @@ Archivos .txt (sensores MQ × 20 s)
          ├─ Segmentación en 3 ventanas × 6 sensores = 18 segmentos
          └─ CSV con segmentos crudos (columnas {sensor}_{ventana}__t{idx})
          │
-         │  Fase 5 (solo sobre datos de entrenamiento)
+         │  Fase 5 (split por grupos; PCA/scaler solo sobre train de cada fold)
          ├─ PerKeyPCA: 18 PCAs independientes → vector de ~50 features
          ├─ StandardScaler: media=0, std=1
-         └─ SVM RBF: GridSearchCV 3-fold → best_model.pkl
+         └─ SVM RBF: GridSearchCV 3-fold StratifiedGroupKFold (balanced_accuracy) → best_model.pkl
          │
          ▼
-  Predicción: AQ / HQ / LQ
+  Predicción: AQ / HQ / LQ  (test honesto ≈ 86 % acc / 79 % balanced)
 ```

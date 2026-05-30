@@ -143,7 +143,7 @@ SIGNAL_CONFIG = SignalConfig(
 PCA_CONFIG = PCAConfig(explained_variance_threshold=0.95)
 
 # SVM
-ML_CONFIG = MLConfig(n_splits_cv=3, scoring_metric='accuracy')
+ML_CONFIG = MLConfig(n_splits_cv=3, scoring_metric='balanced_accuracy')
 ```
 
 ## Extender el Pipeline

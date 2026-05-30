@@ -8,6 +8,7 @@ de build_pipeline() sin tocar el resto del flujo.
 """
 
 import pickle
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -17,9 +18,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import (
-    accuracy_score, classification_report, confusion_matrix,
+    accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -34,6 +35,12 @@ from enose.utils import create_output_directory, print_data_summary, setup_loggi
 
 logger = setup_logging(__name__)
 
+# Cada muestra física (vino-lote) se mide varias veces. El nombre de archivo sigue
+# el patrón '{Clase}_Wine{NN}-B{BB}_R{RR}.txt'; el sufijo '_R{RR}' identifica la
+# réplica. Agrupar por todo lo anterior a '_R..' evita que réplicas casi idénticas
+# del mismo vino caigan a la vez en train y test (fuga por grupos).
+REPLICATE_SUFFIX = re.compile(r"_R\d+(?:\.\w+)?$", re.IGNORECASE)
+
 
 class ModelTrainer:
     """
@@ -46,6 +53,8 @@ class ModelTrainer:
         self.df: Optional[pd.DataFrame] = None
         self.X: Optional[pd.DataFrame] = None
         self.y: Optional[pd.Series] = None
+        self.groups = None            # id de vino-lote por muestra (para split por grupos)
+        self.groups_train = None      # ids de grupo del subconjunto de entrenamiento
         self.X_train = self.X_test = self.y_train = self.y_test = None
         self.pipeline: Optional[Pipeline] = None
         self.grid_search: Optional[GridSearchCV] = None
@@ -72,18 +81,59 @@ class ModelTrainer:
             exclude = {"Nombre_Archivo", "Ruta_Completa", "Calidad_Vino"}
             self.X = self.df.drop(columns=[c for c in exclude if c in self.df.columns])
             self.y = self.df["Calidad_Vino"]
-            logger.info(f"Features: {self.X.shape[1]} | Muestras: {self.X.shape[0]} | Clases: {self.y.nunique()}")
+            self.groups = self._derive_groups()
+
+            n_groups = pd.Series(self.groups).nunique()
+            logger.info(f"Features: {self.X.shape[1]} | Muestras: {self.X.shape[0]} | "
+                        f"Clases: {self.y.nunique()} | Grupos (vino-lote): {n_groups}")
+            if n_groups < self.X.shape[0]:
+                logger.info("Se usará validación por grupos: ninguna réplica del mismo vino "
+                            "estará a la vez en train y test.")
             return True
         except Exception as e:
             logger.error(f"Error preparando features: {e}")
             return False
 
+    def _derive_groups(self) -> np.ndarray:
+        """
+        Id de grupo (vino-lote) por muestra, derivado de 'Nombre_Archivo' quitando
+        el sufijo de réplica '_R{RR}'. Si no hay nombres de archivo, cada muestra es
+        su propio grupo (equivale a un split sin agrupar).
+        """
+        if "Nombre_Archivo" not in self.df.columns:
+            logger.warning("Sin columna 'Nombre_Archivo': no se puede agrupar por vino. "
+                           "Cada muestra será su propio grupo (posible fuga por réplicas).")
+            return np.arange(len(self.df))
+        return self.df["Nombre_Archivo"].apply(
+            lambda name: REPLICATE_SUFFIX.sub("", str(name))
+        ).to_numpy()
+
     def split_data(self, test_size: float = 0.2, random_state: int = 42) -> bool:
         try:
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-                self.X, self.y, test_size=test_size, random_state=random_state, stratify=self.y
+            # nº de grupos distintos por clase: limita en cuántos folds se puede
+            # partir manteniendo cada clase representada y los grupos intactos.
+            min_groups_per_class = (
+                pd.DataFrame({"y": self.y.to_numpy(), "g": self.groups})
+                .drop_duplicates("g").groupby("y")["g"].count().min()
             )
-            logger.info(f"Train: {len(self.X_train)} | Test: {len(self.X_test)}")
+            # ~1/test_size folds → primer fold como test, acotado por los grupos disponibles.
+            n_splits = min(max(round(1 / test_size), 2), int(min_groups_per_class))
+            if n_splits < 2:
+                logger.error("Insuficientes grupos por clase para un split por grupos "
+                             "(se requieren ≥2 vinos en la clase más pequeña).")
+                return False
+
+            sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+            train_idx, test_idx = next(sgkf.split(self.X, self.y, self.groups))
+
+            self.X_train, self.X_test = self.X.iloc[train_idx], self.X.iloc[test_idx]
+            self.y_train, self.y_test = self.y.iloc[train_idx], self.y.iloc[test_idx]
+            self.groups_train = self.groups[train_idx]
+
+            n_test_groups = pd.Series(self.groups[test_idx]).nunique()
+            logger.info(f"Split por grupos ({n_splits} folds -> test ~{100/n_splits:.0f}%): "
+                        f"Train {len(self.X_train)} muestras / Test {len(self.X_test)} muestras "
+                        f"({n_test_groups} vinos en test, disjuntos de train)")
             return True
         except Exception as e:
             logger.error(f"Error dividiendo datos: {e}")
@@ -97,7 +147,9 @@ class ModelTrainer:
             if FEATURE_MODE == "pca_signal":
                 steps.append(("pca", PerKeyPCA(PCA_CONFIG)))
             steps.append(("scaler", StandardScaler()))
-            steps.append(("svm", SVC(random_state=42, probability=True)))
+            # probability=False: las métricas usan predict() (no predict_proba), y
+            # probability=True dispara una CV interna (Platt) costosa e innecesaria aquí.
+            steps.append(("svm", SVC(random_state=42, probability=False)))
 
             self.pipeline = Pipeline(steps)
             logger.info("Pipeline construido: " + " -> ".join(name for name, _ in steps))
@@ -108,23 +160,29 @@ class ModelTrainer:
 
     def optimize_hyperparameters(self) -> bool:
         try:
-            min_class = self.y_train.value_counts().min()
-            n_splits = min(ML_CONFIG.n_splits_cv, min_class)
+            # La CV también debe respetar los grupos: el nº de folds se limita por los
+            # grupos (vinos) distintos por clase en el train, no por las muestras.
+            groups_per_class = (
+                pd.DataFrame({"y": self.y_train.to_numpy(), "g": self.groups_train})
+                .drop_duplicates("g").groupby("y")["g"].count().min()
+            )
+            n_splits = min(ML_CONFIG.n_splits_cv, int(groups_per_class))
             if n_splits < 2:
-                logger.error("Clase minoritaria insuficiente para CV (mínimo 2 muestras)")
+                logger.error("Grupos insuficientes en la clase minoritaria del train para CV "
+                             "(se requieren ≥2 vinos).")
                 return False
 
-            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
             self.grid_search = GridSearchCV(
                 estimator=self.pipeline,
                 param_grid=GRID_PARAMS,
-                cv=skf,
+                cv=sgkf,
                 scoring=ML_CONFIG.scoring_metric,
                 n_jobs=ML_CONFIG.n_jobs,
                 verbose=ML_CONFIG.verbose,
             )
-            logger.info(f"GridSearchCV con {n_splits} folds — iniciando búsqueda...")
-            self.grid_search.fit(self.X_train, self.y_train)
+            logger.info(f"GridSearchCV con {n_splits} folds por grupos — iniciando búsqueda...")
+            self.grid_search.fit(self.X_train, self.y_train, groups=self.groups_train)
             logger.info("Búsqueda completada")
             return True
         except Exception as e:
@@ -137,18 +195,22 @@ class ModelTrainer:
             y_pred = best.predict(self.X_test)
             acc_train = accuracy_score(self.y_train, best.predict(self.X_train))
             acc_test = accuracy_score(self.y_test, y_pred)
+            bal_acc_test = balanced_accuracy_score(self.y_test, y_pred)
             cm = confusion_matrix(self.y_test, y_pred)
 
             logger.info(f"Mejores params: {self.grid_search.best_params_}")
-            logger.info(f"CV score: {self.grid_search.best_score_*100:.2f}%  "
-                        f"| Train: {acc_train*100:.2f}%  | Test: {acc_test*100:.2f}%")
+            logger.info(f"CV score ({ML_CONFIG.scoring_metric}): {self.grid_search.best_score_*100:.2f}%  "
+                        f"| Train acc: {acc_train*100:.2f}%  | Test acc: {acc_test*100:.2f}%  "
+                        f"| Test balanced acc: {bal_acc_test*100:.2f}%")
             logger.info("\n" + classification_report(self.y_test, y_pred))
 
             self.results = {
                 "best_params": self.grid_search.best_params_,
                 "cv_score": self.grid_search.best_score_,
+                "cv_scoring_metric": ML_CONFIG.scoring_metric,
                 "train_accuracy": acc_train,
                 "test_accuracy": acc_test,
+                "test_balanced_accuracy": bal_acc_test,
                 "classification_report": classification_report(self.y_test, y_pred, output_dict=True),
                 "confusion_matrix": cm,
                 "y_test": self.y_test.values,

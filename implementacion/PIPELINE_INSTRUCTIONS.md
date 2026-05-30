@@ -88,7 +88,7 @@ SIGNAL_CONFIG = SignalConfig(
 PCA_CONFIG = PCAConfig(explained_variance_threshold=0.95)
 
 # SVM + GridSearch
-ML_CONFIG = MLConfig(n_splits_cv=3, scoring_metric='accuracy')
+ML_CONFIG = MLConfig(n_splits_cv=3, scoring_metric='balanced_accuracy')
 GRID_PARAMS = [...]   # Kernels: linear, rbf | C: [0.1, 1, 10, 100]
 ```
 

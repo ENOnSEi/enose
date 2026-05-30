@@ -85,7 +85,10 @@ class DataSplitConfig:
 class MLConfig:
     model_type: str = "SVM"
     n_splits_cv: int = 3
-    scoring_metric: str = "accuracy"
+    # Clases desbalanceadas (LQ domina, ETH es minoritaria): 'accuracy' premiaría
+    # el sesgo a la clase mayoritaria. 'balanced_accuracy' = media de los recalls
+    # por clase, así la selección de hiperparámetros no ignora las clases pequeñas.
+    scoring_metric: str = "balanced_accuracy"
     n_jobs: int = -1
     verbose: int = 1
 

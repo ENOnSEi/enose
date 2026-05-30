@@ -51,7 +51,7 @@ class PCAConfig:
 class MLConfig:
     model_type: str = 'SVM'
     n_splits_cv: int = 3
-    scoring_metric: str = 'accuracy'
+    scoring_metric: str = 'balanced_accuracy'
     n_jobs: int = -1
 ```
 
@@ -245,10 +245,10 @@ success = trainer.train()   # ejecuta todos los pasos en secuencia
 
 ```python
 trainer.load_and_validate_data()   # carga el CSV
-trainer.prepare_features()          # separa X e y
-trainer.split_data()                # train/test split estratificado
+trainer.prepare_features()          # separa X e y, deriva grupos (vino-lote)
+trainer.split_data()                # split por grupos (StratifiedGroupKFold)
 trainer.build_pipeline()            # [PerKeyPCA ->] StandardScaler -> SVC
-trainer.optimize_hyperparameters()  # GridSearchCV + StratifiedKFold
+trainer.optimize_hyperparameters()  # GridSearchCV + StratifiedGroupKFold (con groups)
 trainer.evaluate_model()            # métricas + visualizaciones
 trainer.save_model()                # best_model.pkl + training_results.pkl
 ```
@@ -259,8 +259,10 @@ trainer.save_model()                # best_model.pkl + training_results.pkl
 trainer.results = {
     'best_params': {...},
     'cv_score': float,
+    'cv_scoring_metric': str,          # 'balanced_accuracy'
     'train_accuracy': float,
     'test_accuracy': float,
+    'test_balanced_accuracy': float,   # honesto con clases desbalanceadas
     'classification_report': {...},
     'confusion_matrix': np.ndarray,
     'y_test': np.ndarray,

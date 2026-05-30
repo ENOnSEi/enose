@@ -158,13 +158,13 @@ $$\frac{\sum_{j=1}^{k} \sigma_j^2}{\sum_{j=1}^{p} \sigma_j^2} \geq \theta \quad 
 
 **Convención:** `{sensor}_{ventana}_pc{n}` — e.g., `MQ3_1_w2-10_pc1`.
 
-**Limitación conocida:** el PCA se ajusta sobre todo el dataset en la Fase 4, antes del split train/test de la Fase 5. Esto introduce un leve data leakage en la transformación PCA (no en el clasificador). El paper de referencia aplica el mismo enfoque. Para eliminarlo completamente habría que integrar el PCA dentro del pipeline de Phase 5 como un paso previo al scaler.
+**Sin data leakage (corregido):** el PCA ya **no** se ajusta en la Fase 4. La Fase 4 solo serializa los segmentos crudos por `{sensor}_{ventana}__t{idx}`; el PCA (`PerKeyPCA`) se ajusta **dentro del Pipeline de la Fase 5**, solo sobre el train de cada fold. Así la base de proyección nunca ve el test.
 
-**Archivo generado:** `data/processed/pca_transformers.pkl` — necesario junto a `best_model.pkl` para clasificar nuevas muestras.
+**Sin archivo PCA aparte:** el `PerKeyPCA` ajustado queda embebido en `best_model.pkl` (es el primer paso del Pipeline); ya no se genera `pca_transformers.pkl`.
 
 ---
 
-## `phase_4_dataset_generation.py` — Ensamblaje del dataset maestro
+## `enose/pipeline/dataset.py` (Fase 4) — Ensamblaje del dataset maestro
 
 ### Qué hace
 
@@ -185,7 +185,7 @@ El dataset maestro es el contrato entre el procesamiento de señal y el modelo M
 
 ---
 
-## `phase_5_model_training.py` — Entrenamiento del modelo SVM
+## `enose/model/trainer.py` (Fase 5) — Entrenamiento del modelo SVM
 
 ### Qué hace
 
@@ -194,8 +194,10 @@ Carga el dataset maestro, entrena un SVM con búsqueda exhaustiva de hiperparám
 ### Pipeline de preprocesamiento + modelo
 
 ```
-X (54 features) → StandardScaler → SVC
+X (segmentos crudos) → PerKeyPCA → StandardScaler → SVC
 ```
+
+En modo `pca_signal`, `PerKeyPCA` es el primer paso del Pipeline: ajusta un PCA por `{sensor}_{ventana}` **solo sobre el train de cada fold**, eliminando el data leakage.
 
 **Por qué StandardScaler antes del SVM:**
 
@@ -207,18 +209,16 @@ con $\mu$ y $\sigma$ calculados **solo sobre el conjunto de entrenamiento** (y a
 
 ---
 
-### Validación cruzada estratificada — StratifiedKFold
+### Validación cruzada por grupos — StratifiedGroupKFold
 
-**Qué hace:** divide el conjunto de entrenamiento en `k` folds manteniendo la misma proporción de clases en cada fold.
+**Por qué por grupos (corrección crítica):** cada vino-lote se mide ~11 veces (réplicas `_R{RR}`). Hay solo **22 vinos independientes** para 235 muestras. Un `StratifiedKFold`/`train_test_split` normal reparte réplicas casi idénticas del mismo vino entre train y test → **fuga por grupos**: el modelo memoriza y la accuracy de test sube artificialmente (llegaba al 100%).
 
-**Por qué estratificado:**
+`StratifiedGroupKFold` agrupa por vino-lote (derivado del nombre de archivo quitando el sufijo `_R{RR}`) y garantiza que **ningún vino esté a la vez en train y test**, manteniendo además la proporción de clases. Se usa tanto en el split externo train/test como en la CV interna del GridSearch (pasando `groups`).
 
-Con datasets pequeños y desbalanceados (lo habitual en narices electrónicas de laboratorio), un fold aleatorio podría quedarse sin ejemplos de una clase, haciendo imposible el entrenamiento o produciendo métricas engañosas. StratifiedKFold garantiza que cada fold tenga representación proporcional de todas las clases.
+**Ajuste dinámico de k:** el nº de folds se acota por los **grupos** distintos por clase, no por las muestras:
+$$k = \min(k_{config}, n_{min\_grupos\_clase})$$
 
-**Ajuste dinámico de k:** el código calcula:
-$$k = \min(k_{config}, n_{min\_clase})$$
-
-donde $n_{min\_clase}$ es el número de muestras de la clase más pequeña en el set de entrenamiento. Esto evita que GridSearchCV falle si hay muy pocas muestras de alguna clase.
+donde $n_{min\_grupos\_clase}$ es el número de vinos distintos de la clase con menos vinos en el train. Evita que el GridSearch falle cuando una clase tiene pocos grupos.
 
 ---
 
@@ -247,7 +247,8 @@ Mapea los datos implícitamente a un espacio de dimensión infinita donde pueden
 
 | Métrica | Qué mide |
 |---|---|
-| **Accuracy** | Proporción de predicciones correctas. Engañosa con clases desbalanceadas. |
+| **Accuracy** | Proporción de predicciones correctas. Engañosa con clases desbalanceadas; por eso **no** se usa para seleccionar el modelo. |
+| **Balanced accuracy** | Media de los recalls por clase. **Métrica de selección en el GridSearch** (`scoring='balanced_accuracy'`); no la sesga la clase mayoritaria. Se reporta también en test (`test_balanced_accuracy`). |
 | **Precision por clase** | De las veces que predijo clase X, ¿cuántas eran realmente X? |
 | **Recall por clase** | De las muestras reales de clase X, ¿cuántas detectó correctamente? |
 | **F1-score** | Media armónica de precision y recall. Equilibra ambos. |
@@ -255,7 +256,7 @@ Mapea los datos implícitamente a un espacio de dimensión infinita donde pueden
 
 La brecha `train_accuracy - test_accuracy` es el indicador principal de overfitting. Si es >10%, el modelo ha memorizado el conjunto de entrenamiento.
 
-**Limitación actual:** se reporta solo accuracy en la validación cruzada (`scoring='accuracy'`). Con clases desbalanceadas debería usarse `scoring='f1_macro'` o `scoring='balanced_accuracy'`.
+**Resultado honesto (con validación por grupos):** Test accuracy ≈ 86 % / balanced ≈ 79 %. La diferencia respecto al 100 % anterior **no es una regresión**: el 100 % era artificial por la fuga por grupos (réplicas del mismo vino en train y test).
 
 ---
 
@@ -291,13 +292,14 @@ Funciones de soporte sin lógica de negocio propia:
 
 ## Puntos de mejora identificados
 
-| Área | Problema | Posible solución |
+| Área | Problema | Estado / solución |
 |---|---|---|
-| Data leakage en PCA | PCA se ajusta sobre todos los datos antes del split train/test | Integrar PCA dentro del pipeline de Phase 5 como paso previo al scaler |
+| ✅ Data leakage en PCA | PCA se ajustaba sobre todos los datos antes del split | **Resuelto:** `PerKeyPCA` integrado en el Pipeline, se ajusta solo sobre train por fold |
+| ✅ Fuga por grupos | Réplicas del mismo vino-lote caían en train y test (test 100 % artificial) | **Resuelto:** `StratifiedGroupKFold` agrupando por vino-lote |
+| ✅ Métrica de CV | Se usaba accuracy, engañosa con clases desbalanceadas | **Resuelto:** `scoring='balanced_accuracy'` |
 | Señal demasiado corta | Se omite el filtro Savitzky-Golay sin marcar el archivo como inválido | Rechazar archivos con menos de `savgol_window` muestras |
 | Normalización fallback | Si R₀=0 se usa Z-score, no equivalente físicamente | Marcar el archivo como corrupto en lugar de continuar |
 | Etiquetado por nombre | Frágil ante variaciones en el nombre del archivo | Añadir un CSV de manifiesto con nombre → clase |
-| Métrica de CV | Se usa accuracy, engañosa con clases desbalanceadas | Cambiar a `f1_macro` o `balanced_accuracy` |
 | Mezcla de configuraciones | No hay hash ni versión del dataset | Incluir metadatos de configuración en el CSV o en un archivo sidecar |
 | Ventanas fijas | Las ventanas temporales son globales, no adaptativas por muestra | Detección automática del inicio/fin de la inyección (umbral sobre la derivada) |
 | Etanol como clase | ETH está mezclado con las clases de vino en el mismo clasificador | Considerar un clasificador binario previo (¿es etanol o es vino?) antes del de calidad |

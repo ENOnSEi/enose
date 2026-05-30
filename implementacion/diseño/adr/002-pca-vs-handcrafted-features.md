@@ -57,6 +57,10 @@ Ahora:
 `PCAFeatureExtractor` se mantiene por compatibilidad con `SignalExtractorProtocol`
 (tests de contrato) pero ya no participa en el pipeline activo.
 
+> **Segunda fuente de fuga (corregida aparte):** además del PCA, las réplicas del
+> mismo vino-lote se repartían entre train y test. La Fase 5 usa ahora
+> `StratifiedGroupKFold` agrupando por vino-lote. Ver CHANGELOG V5 y `model/trainer.py`.
+
 ## Impacto en producción
 
 Para modo `pca_signal`, la inferencia sobre nuevas muestras requiere:
