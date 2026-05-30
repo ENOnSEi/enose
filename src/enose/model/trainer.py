@@ -100,7 +100,7 @@ class ModelTrainer:
             steps.append(("svm", SVC(random_state=42, probability=True)))
 
             self.pipeline = Pipeline(steps)
-            logger.info("Pipeline construido: " + " → ".join(name for name, _ in steps))
+            logger.info("Pipeline construido: " + " -> ".join(name for name, _ in steps))
             return True
         except Exception as e:
             logger.error(f"Error construyendo pipeline: {e}")
