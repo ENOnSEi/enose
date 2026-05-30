@@ -95,14 +95,20 @@ python main.py --phase 5
 Fase 4: Extracción de Características
   io/reader.py        → carga ficheros .txt de sensores
   signal/processor.py → Savitzky-Golay + normalización de línea base
-  features/pca.py     → proyección PCA por (sensor × ventana)   [modo pca_signal]
+  signal/processor.py → segmentación por (sensor × ventana)     [modo pca_signal]
   features/handcrafted.py → máximo, AUC, pendiente por ventana  [modo handcrafted]
   pipeline/dataset.py → agregación → dataset_maestro_vinos.csv
+                        (en pca_signal serializa segmentos crudos; el PCA se ajusta en Fase 5)
 
 Fase 5: Entrenamiento del Modelo
-  pipeline/dataset.py → carga + validación CSV
-  model/trainer.py    → StandardScaler → SVM → GridSearchCV → best_model.pkl
+  pipeline/dataset.py → carga + validación CSV + split por grupos (vino-lote)
+  model/trainer.py    → PerKeyPCA → StandardScaler → SVM
+                        GridSearchCV + StratifiedGroupKFold (balanced_accuracy) → best_model.pkl
 ```
+
+> **Sin data leakage:** en modo `pca_signal` el PCA (`PerKeyPCA`) se ajusta **dentro** del
+> Pipeline, solo sobre el train de cada fold. Además la validación es **por grupos**: ninguna
+> réplica del mismo vino-lote aparece a la vez en train y test (ver ADR 002 y CHANGELOG V5).
 
 ## Modos de Extracción de Características
 
@@ -110,7 +116,7 @@ Controlado por `FEATURE_MODE` en `src/enose/config.py`:
 
 | Modo | Descripción | Características/muestra | Artefactos necesarios para inferencia |
 |---|---|---|---|
-| `pca_signal` (por defecto) | PCA sobre curvas de señal por (sensor × ventana) | ~15–20 (95% var) | `best_model.pkl` + `pca_transformers.pkl` |
+| `pca_signal` (por defecto) | PCA sobre curvas de señal por (sensor × ventana), ajustado dentro del Pipeline | ~15–20 (95% var) | `best_model.pkl` únicamente (el PCA va embebido) |
 | `handcrafted` | Máximo, AUC, pendiente por ventana | 54 fijas | `best_model.pkl` únicamente |
 
 ## Salidas
@@ -118,8 +124,7 @@ Controlado por `FEATURE_MODE` en `src/enose/config.py`:
 | Fichero | Descripción |
 |---|---|
 | `datos/brutos/dataset_maestro_vinos.csv` | Dataset maestro |
-| `datos/procesados/best_model.pkl` | Pipeline SVM entrenado (StandardScaler + SVM) |
-| `datos/procesados/pca_transformers.pkl` | Modelos PCA — necesarios para inferencia en modo `pca_signal` |
+| `datos/procesados/best_model.pkl` | Pipeline entrenado completo (PerKeyPCA + StandardScaler + SVM) |
 | `datos/procesados/training_results.pkl` | Métricas y resultados de evaluación |
 | `datos/procesados/visualizaciones/` | Matriz de confusión, gráficas de precisión, informe de clasificación |
 
