@@ -20,10 +20,10 @@ def _project_root() -> Path:
 
 
 PROJECT_ROOT = _project_root()
-DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-NOTEBOOK_DIR = PROJECT_ROOT / "notebooks"
-LOGS_DIR = PROJECT_ROOT / "logs"
+DATA_RAW_DIR = PROJECT_ROOT / "datos" / "brutos"
+DATA_PROCESSED_DIR = PROJECT_ROOT / "datos" / "procesados"
+NOTEBOOK_DIR = PROJECT_ROOT / "cuadernos"
+LOGS_DIR = PROJECT_ROOT / "registros"
 
 # Crear directorios necesarios al importar
 for _d in [DATA_RAW_DIR, DATA_PROCESSED_DIR, NOTEBOOK_DIR, LOGS_DIR]:

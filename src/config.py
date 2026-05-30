@@ -28,13 +28,13 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent
 
 PROJECT_ROOT = get_project_root()
-DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-NOTEBOOK_DIR = PROJECT_ROOT / "notebooks"
+DATA_RAW_DIR = PROJECT_ROOT / "datos" / "brutos"
+DATA_PROCESSED_DIR = PROJECT_ROOT / "datos" / "procesados"
+NOTEBOOK_DIR = PROJECT_ROOT / "cuadernos"
 SRC_DIR = PROJECT_ROOT / "src"
 
 # Crear directorios si no existen
-LOGS_DIR = PROJECT_ROOT / 'logs'
+LOGS_DIR = PROJECT_ROOT / 'registros'
 for directory in [DATA_RAW_DIR, DATA_PROCESSED_DIR, NOTEBOOK_DIR, LOGS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +178,7 @@ GRID_PARAMS_EXTENDED = [
 LOGGING_CONFIG = {
     'level': 'INFO',
     'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    'log_file': PROJECT_ROOT / 'logs' / 'enose_project.log'
+    'log_file': PROJECT_ROOT / 'registros' / 'enose_project.log'
 }
 
 # ============================================================================
