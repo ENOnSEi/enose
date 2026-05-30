@@ -43,15 +43,15 @@ htmlcov/
 coverage.xml
 
 # ===========================================================================
-# Artefactos generados por el pipeline (todo data/processed/)
+# Artefactos generados por el pipeline (todo datos/procesados/)
 # ===========================================================================
-data/processed/
-data/raw/dataset_maestro_vinos.csv
+datos/procesados/
+datos/brutos/dataset_maestro_vinos.csv
 
 # ===========================================================================
 # Logs
 # ===========================================================================
-logs/
+registros/
 *.log
 
 # ===========================================================================
