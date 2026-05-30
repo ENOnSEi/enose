@@ -26,8 +26,9 @@ from sklearn.svm import SVC
 
 from enose.config import (
     DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE,
-    GRID_PARAMS, ML_CONFIG,
+    GRID_PARAMS, ML_CONFIG, PCA_CONFIG,
 )
+from enose.features.perkey_pca import PerKeyPCA
 from enose.pipeline.dataset import load_dataset, validate_dataset
 from enose.utils import create_output_directory, print_data_summary, setup_logging
 
@@ -90,11 +91,16 @@ class ModelTrainer:
 
     def build_pipeline(self) -> bool:
         try:
-            self.pipeline = Pipeline([
-                ("scaler", StandardScaler()),
-                ("svm", SVC(random_state=42, probability=True)),
-            ])
-            logger.info("Pipeline construido: StandardScaler → SVM")
+            steps = []
+            # En modo pca_signal, el PCA por (sensor×ventana) se ajusta DENTRO del
+            # pipeline (solo sobre train en cada fold) para evitar data leakage.
+            if FEATURE_MODE == "pca_signal":
+                steps.append(("pca", PerKeyPCA(PCA_CONFIG)))
+            steps.append(("scaler", StandardScaler()))
+            steps.append(("svm", SVC(random_state=42, probability=True)))
+
+            self.pipeline = Pipeline(steps)
+            logger.info("Pipeline construido: " + " → ".join(name for name, _ in steps))
             return True
         except Exception as e:
             logger.error(f"Error construyendo pipeline: {e}")
@@ -168,9 +174,8 @@ class ModelTrainer:
             logger.info(f"Modelo guardado en: {output_dir / 'best_model.pkl'}")
 
             if FEATURE_MODE == "pca_signal":
-                pca_path = DATA_PROCESSED_DIR / "pca_transformers.pkl"
-                if not pca_path.exists():
-                    logger.warning("pca_transformers.pkl no encontrado. Ejecuta la Fase 4 primero.")
+                logger.info("PCA incluido dentro de best_model.pkl (PerKeyPCA en el Pipeline); "
+                            "no se requiere pca_transformers.pkl por separado.")
             return True
         except Exception as e:
             logger.error(f"Error guardando modelo: {e}")

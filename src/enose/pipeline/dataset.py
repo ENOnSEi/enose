@@ -4,21 +4,24 @@ Generador del dataset maestro (Phase 4).
 Orquesta la ingesta, el procesamiento de señal y la extracción de características
 sobre todos los archivos de sensor disponibles. Soporta dos modos:
   - handcrafted : estadísticos (max, AUC, slope) por ventana
-  - pca_signal  : proyección PCA por (sensor × ventana)
+  - pca_signal  : segmentos crudos por (sensor × ventana); el PCA se ajusta más
+                  tarde dentro del Pipeline de la Fase 5 (ver model/trainer.py y
+                  features/perkey_pca.py) para evitar data leakage hacia el test.
 """
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import sys
 
+import numpy as np
 import pandas as pd
 
 from enose.config import (
     DATA_PROCESSED_DIR, DATA_RAW_DIR, DATASET_MAESTRO_PATH,
-    FEATURE_MODE, PCA_CONFIG, SENSOR_COLUMNS,
+    FEATURE_MODE, SENSOR_COLUMNS,
 )
 from enose.features.handcrafted import HandcraftedExtractor
-from enose.features.pca import PCAFeatureExtractor
+from enose.features.perkey_pca import SEGMENT_COL_SEP
 from enose.io.reader import extract_substance_label, get_files_recursive, load_sensor_file
 from enose.signal.processor import SignalProcessor
 from enose.utils import (
@@ -38,7 +41,6 @@ class DatasetGenerator:
         self.handcrafted = HandcraftedExtractor()
         self.records: List[dict] = []
         self.stats: Dict = {"total_files": 0, "processed": 0, "failed": 0, "classes": {}}
-        self.pca_extractor = PCAFeatureExtractor(PCA_CONFIG) if FEATURE_MODE == "pca_signal" else None
 
     # ------------------------------------------------------------------
     # Entrada principal
@@ -95,6 +97,11 @@ class DatasetGenerator:
                 self.records.append(record)
 
     def _generate_pca(self, files: List[Path]) -> None:
+        """
+        Serializa los segmentos crudos por (sensor × ventana). El PCA NO se ajusta
+        aquí: se reajusta dentro del Pipeline de la Fase 5 (PerKeyPCA) solo sobre
+        los datos de entrenamiento, evitando el data leakage hacia el test.
+        """
         # Pasada 1: recolectar segmentos
         raw_data = []
         all_segments_by_key: Dict[str, List] = {}
@@ -116,28 +123,32 @@ class DatasetGenerator:
             logger.error("No se pudieron extraer segmentos")
             return
 
-        # Ajustar PCA
-        logger.info(f"Ajustando PCA sobre {len(raw_data)} muestras...")
-        self.pca_extractor.fit(all_segments_by_key)
-        pca_path = DATA_PROCESSED_DIR / "pca_transformers.pkl"
-        self.pca_extractor.save(pca_path)
+        # Longitud fija por clave (moda de longitudes). Es determinista y depende
+        # solo del nº de muestras de cada segmento (no de sus valores), por lo que
+        # no introduce fuga de información del test.
+        segment_lengths: Dict[str, int] = {}
+        for key, segs in all_segments_by_key.items():
+            lengths = [len(s) for s in segs]
+            segment_lengths[key] = max(set(lengths), key=lengths.count)
 
-        for key, ratios in list(self.pca_extractor.explained_variance_summary().items())[:3]:
-            logger.info(f"  {key}: {len(ratios)} PCs, var acumulada={ratios.sum()*100:.1f}%")
-
-        # Pasada 2: proyectar
-        logger.info("Pasada 2/2: proyectando sobre PCs...")
+        # Pasada 2: serializar segmentos crudos como columnas '{key}__t{idx}'
+        logger.info("Pasada 2/2: serializando segmentos crudos (el PCA se ajusta en la Fase 5)...")
         for filename, label, sensor_segments in raw_data:
             record = {"Nombre_Archivo": filename, "Calidad_Muestra": label}
             for sensor, windows in sensor_segments.items():
                 for win_label, segment in windows.items():
                     key = f"{sensor}_{win_label}"
-                    if key not in self.pca_extractor.pca_models:
-                        continue
-                    scores = self.pca_extractor.transform(segment, key)
-                    for i, score in enumerate(scores, 1):
-                        record[f"{key}_pc{i}"] = float(score)
+                    padded = self._pad_truncate(segment, segment_lengths[key])
+                    for t, value in enumerate(padded):
+                        record[f"{key}{SEGMENT_COL_SEP}{t:03d}"] = float(value)
             self.records.append(record)
+
+    @staticmethod
+    def _pad_truncate(signal: np.ndarray, length: int) -> np.ndarray:
+        if len(signal) >= length:
+            return signal[:length]
+        pad_value = signal[-1] if len(signal) > 0 else 0.0
+        return np.concatenate([signal, np.full(length - len(signal), pad_value)])
 
     # ------------------------------------------------------------------
     # Helpers de procesamiento por archivo

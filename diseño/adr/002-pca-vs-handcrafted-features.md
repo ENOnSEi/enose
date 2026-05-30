@@ -23,7 +23,7 @@ dataset como al proceso de inferencia en producción.
 
 - **Ventajas**: Captura varianza de la forma completa de la señal, generalmente mejor accuracy
 - **Dimensionalidad**: Variable (~15-20 features, controlado por `explained_variance_threshold`)
-- **Producción**: Necesita `best_model.pkl` + `pca_transformers.pkl`
+- **Producción**: Solo necesita `best_model.pkl` (el PCA viaja dentro del Pipeline)
 - **Desventaja**: No interpretable, los PCs no tienen significado físico directo
 
 ## Decisión
@@ -38,9 +38,29 @@ temporal completa de la señal, que es precisamente lo que diferencia calidades 
 Editar `FEATURE_MODE` en `src/enose/config.py` y re-ejecutar la Fase 4 completa.
 El pipeline detecta el modo automáticamente.
 
+## Dónde se ajusta el PCA (corrección de data leakage)
+
+> **Cambio 2026-05-30**: el PCA ya **no** se ajusta en la Fase 4.
+
+Antes, la Fase 4 ajustaba el PCA sobre *todas* las muestras (train + test) y
+guardaba las proyecciones en el CSV. El split train/test ocurría después en la
+Fase 5, por lo que el PCA "veía" el conjunto de test → **data leakage** y accuracy
+sobreestimada.
+
+Ahora:
+- La **Fase 4** serializa los **segmentos crudos** por (sensor×ventana) en columnas
+  `{sensor}_{ventana}__t{idx}`. No ajusta ningún PCA.
+- La **Fase 5** incluye `PerKeyPCA` (`features/perkey_pca.py`) como primer paso del
+  `Pipeline` de sklearn. El PCA se reajusta **solo sobre los datos de entrenamiento**
+  en cada fold de la validación cruzada y en el split final, eliminando la fuga.
+
+`PCAFeatureExtractor` se mantiene por compatibilidad con `SignalExtractorProtocol`
+(tests de contrato) pero ya no participa en el pipeline activo.
+
 ## Impacto en producción
 
 Para modo `pca_signal`, la inferencia sobre nuevas muestras requiere:
-1. Cargar `pca_transformers.pkl` con `PCAFeatureExtractor.load()`
-2. Procesar la señal cruda → segmentar → proyectar sobre PCs
-3. Pasar el vector resultante a `best_model.pkl`
+1. Procesar la señal cruda → segmentar por (sensor×ventana) → recortar/rellenar a
+   la longitud fija y construir una fila con columnas `{sensor}_{ventana}__t{idx}`
+2. Pasar esa fila a `best_model.pkl` — el `PerKeyPCA` + `StandardScaler` + `SVM`
+   embebidos en el Pipeline hacen el resto. Ya **no** hace falta `pca_transformers.pkl`.
