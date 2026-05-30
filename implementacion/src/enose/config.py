@@ -24,9 +24,10 @@ DATA_RAW_DIR = PROJECT_ROOT / "datos" / "brutos"
 DATA_PROCESSED_DIR = PROJECT_ROOT / "datos" / "procesados"
 NOTEBOOK_DIR = PROJECT_ROOT / "cuadernos"
 LOGS_DIR = PROJECT_ROOT / "registros"
+REPORTS_DIR = PROJECT_ROOT / "informes"   # informes de ejecución con timestamp (en .gitignore)
 
 # Crear directorios necesarios al importar
-for _d in [DATA_RAW_DIR, DATA_PROCESSED_DIR, NOTEBOOK_DIR, LOGS_DIR]:
+for _d in [DATA_RAW_DIR, DATA_PROCESSED_DIR, NOTEBOOK_DIR, LOGS_DIR, REPORTS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 DATASET_MAESTRO_PATH = DATA_RAW_DIR / "dataset_maestro_vinos.csv"

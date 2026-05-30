@@ -59,6 +59,8 @@ class ModelTrainer:
         self.pipeline: Optional[Pipeline] = None
         self.grid_search: Optional[GridSearchCV] = None
         self.results: Dict = {}
+        self.n_groups: int = 0           # nº de vinos-lote distintos (para el informe)
+        self.split_info: Optional[Dict] = None  # resumen de la división train/test
 
     # ------------------------------------------------------------------
     # Pasos del entrenamiento
@@ -84,6 +86,7 @@ class ModelTrainer:
             self.groups = self._derive_groups()
 
             n_groups = pd.Series(self.groups).nunique()
+            self.n_groups = int(n_groups)
             logger.info(f"Features: {self.X.shape[1]} | Muestras: {self.X.shape[0]} | "
                         f"Clases: {self.y.nunique()} | Grupos (vino-lote): {n_groups}")
             if n_groups < self.X.shape[0]:
@@ -131,6 +134,12 @@ class ModelTrainer:
             self.groups_train = self.groups[train_idx]
 
             n_test_groups = pd.Series(self.groups[test_idx]).nunique()
+            self.split_info = {
+                "n_train": int(len(self.X_train)),
+                "n_test": int(len(self.X_test)),
+                "n_test_groups": int(n_test_groups),
+                "test_size_effective": float(len(self.X_test) / len(self.X)) if len(self.X) else 0.0,
+            }
             logger.info(f"Split por grupos ({n_splits} folds -> test ~{100/n_splits:.0f}%): "
                         f"Train {len(self.X_train)} muestras / Test {len(self.X_test)} muestras "
                         f"({n_test_groups} vinos en test, disjuntos de train)")
@@ -243,6 +252,32 @@ class ModelTrainer:
             logger.error(f"Error guardando modelo: {e}")
             return False
 
+    def generate_report(self) -> bool:
+        """
+        Genera el informe de ejecución (Markdown + PNGs + report.json) en una
+        carpeta con timestamp dentro de informes/. Un fallo aquí NO invalida el
+        entrenamiento: el modelo ya está entrenado y guardado.
+        """
+        try:
+            # Import diferido: enose.report es la única zona Dev que toca spec en
+            # runtime (ver design/adr/001-informe-automatico-de-ejecucion.md).
+            from enose.report import MarkdownReportGenerator, build_execution_report
+            from spec.schemas.execution_report import SplitSummary
+
+            split = SplitSummary(**self.split_info) if self.split_info else None
+            report = build_execution_report(
+                df=self.df,
+                results=self.results,
+                feature_mode=FEATURE_MODE,
+                n_groups=self.n_groups,
+                split=split,
+            )
+            MarkdownReportGenerator().generate(report)
+            return True
+        except Exception as e:
+            logger.warning(f"No se pudo generar el informe de ejecución: {e}")
+            return True  # no bloquea el pipeline
+
     # ------------------------------------------------------------------
     # Orquestador
     # ------------------------------------------------------------------
@@ -256,6 +291,7 @@ class ModelTrainer:
             ("Optimizando hiperparámetros", self.optimize_hyperparameters),
             ("Evaluando modelo", self.evaluate_model),
             ("Guardando modelo", self.save_model),
+            ("Generando informe", self.generate_report),
         ]
         for name, step in steps:
             logger.info(f">> {name}...")
