@@ -15,7 +15,8 @@ src/enose/
 ├── signal/
 │   └── processor.py   # Procesamiento de señal (SignalProcessor)
 ├── features/
-│   ├── pca.py         # PCAFeatureExtractor
+│   ├── perkey_pca.py  # PerKeyPCA — transformer sklearn (pipeline activo)
+│   ├── pca.py         # PCAFeatureExtractor — cumple SignalExtractorProtocol
 │   └── handcrafted.py # HandcraftedExtractor
 ├── model/
 │   └── trainer.py     # ModelTrainer
@@ -131,30 +132,59 @@ get_signal_segments(signal: np.ndarray) -> Dict[str, np.ndarray]
 
 ---
 
-## `enose.features.pca.PCAFeatureExtractor`
+## `enose.features.perkey_pca.PerKeyPCA` ← **pipeline activo**
 
-Implementa `SignalExtractorProtocol`. Ajusta un PCA independiente por (sensor × ventana).
+Transformer sklearn (`BaseEstimator` + `TransformerMixin`) que ajusta un PCA independiente por cada clave `{sensor}_{ventana}`. Se coloca como primer paso del Pipeline de la Fase 5 y se reajusta solo sobre los datos de entrenamiento en cada fold de la CV — sin data leakage.
 
 ```python
-extractor = PCAFeatureExtractor()                    # usa PCA_CONFIG
-extractor = PCAFeatureExtractor(config=my_pca_cfg)
+from enose.features.perkey_pca import PerKeyPCA
+from enose.config import PCAConfig
+
+transformer = PerKeyPCA()                         # usa PCA_CONFIG por defecto
+transformer = PerKeyPCA(config=PCAConfig(explained_variance_threshold=0.90))
 ```
 
-### Flujo típico
+### Formato de entrada esperado
+
+Un `pd.DataFrame` con columnas `{sensor}_{ventana}__t{idx}` (generadas por la Fase 4):
+
+```
+MQ3_1_w0-2__t000, MQ3_1_w0-2__t001, ..., MQ4_1_w2-10__t000, ...
+```
+
+### Flujo sklearn
 
 ```python
-# Ajustar (una vez, sobre todo el dataset)
+from sklearn.pipeline import Pipeline
+
+pipe = Pipeline([
+    ("pca",    PerKeyPCA()),
+    ("scaler", StandardScaler()),
+    ("svm",    SVC()),
+])
+pipe.fit(X_train, y_train)   # PCA ajustado solo sobre X_train
+pipe.predict(X_test)         # PCA transforma X_test sin haberlo visto
+```
+
+### Diagnóstico
+
+```python
+transformer.fit(X_train)
+summary = transformer.explained_variance_summary()  # {key: np.ndarray de ratios}
+names   = transformer.get_feature_names_out()       # ['MQ3_1_w0-2_pc1', ...]
+```
+
+---
+
+## `enose.features.pca.PCAFeatureExtractor`
+
+Implementa `SignalExtractorProtocol`. Se mantiene para los tests de contrato pero **ya no participa en el pipeline activo** (sustituido por `PerKeyPCA`). Su API sigue siendo válida.
+
+```python
+extractor = PCAFeatureExtractor()
 extractor.fit(all_segments)   # {'{sensor}_{ventana}': [array, ...]}
-
-# Transformar muestra a muestra
-scores = extractor.transform(segment, key='MQ3_1_w2-10')  # → np.ndarray
-
-# Persistir
-extractor.save(path / 'pca_transformers.pkl')
-extractor = PCAFeatureExtractor.load(path / 'pca_transformers.pkl')
-
-# Diagnóstico
-summary = extractor.explained_variance_summary()  # {key: np.ndarray de ratios}
+scores = extractor.transform(segment, key='MQ3_1_w2-10')
+summary = extractor.explained_variance_summary()
 ```
 
 ---
@@ -187,8 +217,8 @@ df = gen.generate_dataset(output_path=DATASET_MAESTRO_PATH)
 ```
 
 Detecta automáticamente el modo (`FEATURE_MODE`) y ejecuta la estrategia correspondiente:
-- `handcrafted`: una pasada, extrae estadísticos directamente
-- `pca_signal`: dos pasadas — ajusta PCA, proyecta
+- `handcrafted`: una pasada, extrae estadísticos directamente (max, AUC, slope por ventana)
+- `pca_signal`: dos pasadas — calcula longitudes fijas de segmento, serializa los segmentos crudos como columnas `{sensor}_{ventana}__t{idx}`. El PCA se ajusta más tarde en la Fase 5 (dentro del Pipeline, solo sobre train).
 
 ### Funciones auxiliares
 
@@ -217,7 +247,7 @@ success = trainer.train()   # ejecuta todos los pasos en secuencia
 trainer.load_and_validate_data()   # carga el CSV
 trainer.prepare_features()          # separa X e y
 trainer.split_data()                # train/test split estratificado
-trainer.build_pipeline()            # StandardScaler → SVC
+trainer.build_pipeline()            # [PerKeyPCA ->] StandardScaler -> SVC
 trainer.optimize_hyperparameters()  # GridSearchCV + StratifiedKFold
 trainer.evaluate_model()            # métricas + visualizaciones
 trainer.save_model()                # best_model.pkl + training_results.pkl
