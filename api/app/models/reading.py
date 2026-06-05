@@ -10,6 +10,7 @@ class Reading(Base):
     __tablename__ = "readings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    measurement_set_id: Mapped[int | None] = mapped_column(ForeignKey("measurement_sets.id"), nullable=True)
     arduino_ms: Mapped[int] = mapped_column(BigInteger)
     estado: Mapped[str] = mapped_column(String(20))
     captured_at: Mapped[datetime] = mapped_column(

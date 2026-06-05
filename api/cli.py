@@ -2,6 +2,7 @@
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE = "http://localhost:8000"
@@ -25,6 +26,15 @@ def print_status(s: dict) -> None:
     print(f"{icon} running={s['running']}  estado={s['estado']}  total={s['readings_total']}")
 
 
+def do_start(name: str | None = None) -> dict:
+    if name is None:
+        name = input("Nombre de la medición: ").strip()
+        if not name:
+            print("El nombre no puede estar vacío.", file=sys.stderr)
+            sys.exit(1)
+    return req("POST", f"/serial/start?{urllib.parse.urlencode({'name': name})}")
+
+
 def menu() -> None:
     print_status(req("GET", "/serial/status"))
     while True:
@@ -43,7 +53,8 @@ def menu() -> None:
             req("PUT", "/serial/estado/medicion")
             print("Estado → medicion")
         elif op == "3":
-            print(req("POST", "/serial/start"))
+            result = do_start()
+            print(f"Iniciado: id={result['measurement_set_id']} nombre='{result['name']}'")
         elif op == "4":
             req("POST", "/serial/stop")
             print("Detenido")
@@ -53,21 +64,28 @@ def menu() -> None:
             break
 
 
-COMMANDS = {
-    "base": lambda: req("PUT", "/serial/estado/base"),
-    "medicion": lambda: req("PUT", "/serial/estado/medicion"),
-    "start": lambda: req("POST", "/serial/start"),
-    "stop": lambda: req("POST", "/serial/stop"),
-    "status": lambda: print_status(req("GET", "/serial/status")) or {},
-}
-
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         menu()
-    elif sys.argv[1] in COMMANDS:
-        result = COMMANDS[sys.argv[1]]()
-        if result:
-            print(result)
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+
+    if cmd == "start":
+        name = sys.argv[2] if len(sys.argv) > 2 else None
+        result = do_start(name)
+        print(f"Iniciado: id={result['measurement_set_id']} nombre='{result['name']}'")
+    elif cmd == "stop":
+        req("POST", "/serial/stop")
+        print("Detenido")
+    elif cmd == "base":
+        req("PUT", "/serial/estado/base")
+        print("Estado → base")
+    elif cmd == "medicion":
+        req("PUT", "/serial/estado/medicion")
+        print("Estado → medicion")
+    elif cmd == "status":
+        print_status(req("GET", "/serial/status"))
     else:
-        print(f"Uso: {sys.argv[0]} [{'|'.join(COMMANDS)}]")
+        print(f"Uso: {sys.argv[0]} [start [nombre] | stop | base | medicion | status]")
         sys.exit(1)
