@@ -219,3 +219,5 @@ __marimo__/
 
 # Claude Code — settings locales de máquina (no compartir)
 .claude/settings.local.json
+.agents/
+.claude/
