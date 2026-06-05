@@ -144,7 +144,7 @@ POST /serial/start
 | Variable                        | Default | Descripción                                      |
 |---------------------------------|---------|--------------------------------------------------|
 | `OBSERVER_WINDOW`               | 60      | Lecturas usadas para calcular la pendiente (15s a 4 Hz) |
-| `OBSERVER_SLOPE_THRESHOLD`      | 1.0     | Umbral de pendiente (unidades/segundo) para "estable" |
+| `OBSERVER_SLOPE_THRESHOLD`      | 20.0    | Umbral de pendiente (unidades/segundo) para "estable". Escala ADC 0-1023, equivale a ~2% de escala/segundo |
 | `OBSERVER_POLL_INTERVAL`        | 1.0     | Segundos entre cada comprobación del observer    |
 | `OBSERVER_MIN_MEDICION_SECONDS` | 30.0    | Tiempo mínimo en medicion. El stop requiere que se cumplan AMBAS condiciones: mínimo transcurrido Y pendiente estable |
 
