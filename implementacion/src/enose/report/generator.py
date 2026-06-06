@@ -25,7 +25,9 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from enose.config import DATA_PROCESSED_DIR, PROJECT_ROOT, REPORTS_DIR, SENSOR_COLUMNS
+from enose.config import (
+    DATA_PROCESSED_DIR, LABEL_COLUMN, NON_FEATURE_COLUMNS, PROJECT_ROOT, REPORTS_DIR, SENSOR_COLUMNS,
+)
 from enose.utils import create_output_directory, setup_logging
 
 # El informe es la frontera Dev→Spec: la estructura validada es la fuente de verdad.
@@ -150,13 +152,12 @@ def build_execution_report(
     n_groups     : nº de vinos-lote distintos
     split        : resumen de la división train/test (opcional)
     """
-    label_col = next((c for c in ("Calidad_Vino", "Calidad_Muestra") if c in df.columns), None)
+    label_col = LABEL_COLUMN if LABEL_COLUMN in df.columns else None
     class_dist = (
         {str(k): int(v) for k, v in df[label_col].value_counts().sort_index().items()}
         if label_col else {}
     )
-    exclude = {"Nombre_Archivo", "Ruta_Completa", "Calidad_Vino", "Calidad_Muestra"}
-    n_features = len([c for c in df.columns if c not in exclude])
+    n_features = len([c for c in df.columns if c not in NON_FEATURE_COLUMNS])
 
     y_test = np.asarray(results["y_test"])
     y_pred = np.asarray(results["y_pred"])
@@ -282,7 +283,7 @@ class MarkdownReportGenerator:
         L.append("## Fase 4 — Dataset\n")
         L.append(f"- Muestras: **{d.n_samples}**")
         L.append(f"- Características: **{d.n_features}**")
-        L.append(f"- Grupos (vino-lote): **{d.n_groups}**")
+        L.append(f"- Grupos (grabación): **{d.n_groups}**")
         L.append(f"- Sensores: {', '.join(d.sensors)}")
         L.append("")
         if d.class_distribution:
@@ -301,7 +302,7 @@ class MarkdownReportGenerator:
             L.append("## División de datos (por grupos)\n")
             L.append(f"- Train: **{s.n_train}** muestras")
             L.append(f"- Test: **{s.n_test}** muestras (~{s.test_size_effective*100:.0f}%)")
-            L.append(f"- Vinos en test (disjuntos de train): **{s.n_test_groups}**")
+            L.append(f"- Grabaciones en test (disjuntas de train): **{s.n_test_groups}**")
             L.append("")
 
         # --- Fase 5: modelo ---

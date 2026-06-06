@@ -7,7 +7,7 @@ Para añadir un nuevo tipo de procesamiento (ej: FFT, wavelet), basta
 con implementar estos métodos.
 """
 
-from typing import Protocol, runtime_checkable, Tuple, Dict
+from typing import Optional, Protocol, runtime_checkable, Sequence, Tuple, Dict
 import numpy as np
 
 
@@ -21,11 +21,20 @@ class SignalProcessorProtocol(Protocol):
         """Suaviza la señal cruda para reducir ruido."""
         ...
 
-    def normalize_by_baseline(self, signal: np.ndarray) -> np.ndarray:
-        """Normaliza por línea base usando cambio fraccional (R0 - Rs) / R0."""
+    def normalize_by_baseline(
+        self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None
+    ) -> np.ndarray:
+        """
+        Normaliza por línea base usando cambio fraccional (R0 - Rs) / R0.
+
+        R0 se estima de ``baseline`` (fase 'base' de la grabación) si se aporta;
+        en su defecto, de las primeras muestras de la propia señal.
+        """
         ...
 
-    def process_signal(self, signal: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def process_signal(
+        self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Pipeline completo: suavizado + normalización.
         Retorna (señal_suavizada, señal_normalizada).

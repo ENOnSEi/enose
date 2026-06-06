@@ -35,11 +35,11 @@ Configuración centralizada como dataclasses frozen (inmutables).
 ```python
 @dataclass(frozen=True)
 class SignalConfig:
-    sampling_frequency: float = 18.5   # Hz
-    savgol_window: int = 15            # debe ser impar
+    sampling_frequency: float = 4.0    # Hz (250 ms entre muestras)
+    savgol_window: int = 9             # debe ser impar
     savgol_polyorder: int = 3
-    baseline_seconds: float = 2.0
-    time_windows: tuple = ((0,2), (2,10), (10,20))
+    baseline_seconds: float = 2.0      # fallback si no hay fase 'base'
+    time_windows: tuple = ((0,5), (5,15), (15,40))   # s desde el inicio de 'medicion'
 
 @dataclass(frozen=True)
 class PCAConfig:
@@ -58,7 +58,7 @@ class MLConfig:
 ### Constantes activas
 
 ```python
-FEATURE_MODE: Literal['handcrafted', 'pca_signal'] = 'pca_signal'
+FEATURE_MODE: Literal['handcrafted', 'pca_signal'] = 'handcrafted'
 SIGNAL_CONFIG = SignalConfig()
 PCA_CONFIG    = PCAConfig()
 ML_CONFIG     = MLConfig()
@@ -68,10 +68,11 @@ GRID_PARAMS   = [...]   # BASE | GRID_PARAMS_REDUCED | GRID_PARAMS_EXTENDED
 ### Rutas
 
 ```python
-PROJECT_ROOT         # raíz del proyecto
-DATA_RAW_DIR         # data/raw/
-DATA_PROCESSED_DIR   # data/processed/
-DATASET_MAESTRO_PATH # data/raw/dataset_maestro_vinos.csv
+PROJECT_ROOT         # .../implementacion
+REPO_ROOT            # raíz del repositorio
+DATA_RAW_DIR         # <repo>/datasets/  (grabaciones .csv)
+DATA_PROCESSED_DIR   # datos/procesados/
+DATASET_MAESTRO_PATH # datos/procesados/dataset_maestro.csv
 ```
 
 ---
@@ -80,22 +81,29 @@ DATASET_MAESTRO_PATH # data/raw/dataset_maestro_vinos.csv
 
 ### `load_sensor_file(file_path: Path) -> Optional[pd.DataFrame]`
 
-Carga un archivo .txt de sensor (tab/espacio separado, 8 columnas).
-Retorna `None` si el archivo no existe o tiene errores.
+Carga una grabación CSV (cabecera `data,v20,v11,v02,v00,estado`).
+Retorna `None` si el archivo no existe o le faltan columnas esperadas.
 
-### `get_files_recursive(directory, pattern) -> List[Path]`
+### `get_files_recursive(directory, pattern='*.csv') -> List[Path]`
 
-Busca archivos recursivamente. Ejemplo: `get_files_recursive(DATA_RAW_DIR, "*.txt")`.
+Busca grabaciones recursivamente. Ejemplo: `get_files_recursive(DATA_RAW_DIR, "*.csv")`.
 
 ### `extract_substance_label(filename: str) -> Optional[str]`
 
-Deriva la etiqueta de sustancia del nombre de archivo.
+Deriva la etiqueta de mezcla del nombre del fichero (coincidencia exacta del
+nombre sin extensión contra `SUBSTANCE_LABELS`; si no está, usa el propio nombre).
 
 ```python
-extract_substance_label("AQ_Wine01-B01_R01.txt")  # → 'AQ'
-extract_substance_label("Ethanol_C1_R01.txt")       # → 'ETH'
-extract_substance_label("HQ_Wine05.txt")            # → 'HQ'
+extract_substance_label("vino.csv")              # → 'Vino'
+extract_substance_label("vinoyagua.csv")         # → 'Vino+Agua'
+extract_substance_label("vinoagitacionrara.csv") # → 'Vino+Alcohol'
+extract_substance_label("mezcla_nueva.csv")      # → 'mezcla_nueva' (fallback)
 ```
+
+### `get_baseline_and_signal(df, sensor) -> Optional[tuple]`
+
+Devuelve `(baseline, signal)` para un sensor: valores de la fase `base` (R0) y
+de la fase `medicion` (respuesta). `None` si no hay fase `medicion`.
 
 ---
 
@@ -114,11 +122,11 @@ processor = SignalProcessor(config=my_config)   # config personalizada
 smooth_signal(signal: np.ndarray) -> np.ndarray
 # Suavizado Savitzky-Golay. Preserva la forma de los picos.
 
-normalize_by_baseline(signal: np.ndarray) -> np.ndarray
+normalize_by_baseline(signal, baseline=None) -> np.ndarray
 # Normalización fraccional: (R0 - Rs) / R0
-# R0 = media de los primeros `baseline_seconds` segundos
+# R0 = media de `baseline` (fase 'base'); si no se aporta, primeras muestras
 
-process_signal(signal: np.ndarray) -> Tuple[np.ndarray, np.ndarray]
+process_signal(signal, baseline=None) -> Tuple[np.ndarray, np.ndarray]
 # Retorna (señal_suavizada, señal_normalizada)
 
 extract_features(signal: np.ndarray) -> Dict[str, float]
@@ -149,7 +157,7 @@ transformer = PerKeyPCA(config=PCAConfig(explained_variance_threshold=0.90))
 Un `pd.DataFrame` con columnas `{sensor}_{ventana}__t{idx}` (generadas por la Fase 4):
 
 ```
-MQ3_1_w0-2__t000, MQ3_1_w0-2__t001, ..., MQ4_1_w2-10__t000, ...
+v20_w0-5__t000, v20_w0-5__t001, ..., v11_w5-15__t000, ...
 ```
 
 ### Flujo sklearn
@@ -171,7 +179,7 @@ pipe.predict(X_test)         # PCA transforma X_test sin haberlo visto
 ```python
 transformer.fit(X_train)
 summary = transformer.explained_variance_summary()  # {key: np.ndarray de ratios}
-names   = transformer.get_feature_names_out()       # ['MQ3_1_w0-2_pc1', ...]
+names   = transformer.get_feature_names_out()       # ['v20_w0-5_pc1', ...]
 ```
 
 ---
@@ -183,7 +191,7 @@ Implementa `SignalExtractorProtocol`. Se mantiene para los tests de contrato per
 ```python
 extractor = PCAFeatureExtractor()
 extractor.fit(all_segments)   # {'{sensor}_{ventana}': [array, ...]}
-scores = extractor.transform(segment, key='MQ3_1_w2-10')
+scores = extractor.transform(segment, key='v20_w5-15')
 summary = extractor.explained_variance_summary()
 ```
 
@@ -197,10 +205,10 @@ Implementa `HandcraftedExtractorProtocol`. No requiere fase de ajuste.
 extractor = HandcraftedExtractor()
 
 # Por señal individual
-features = extractor.extract(normalized_signal, sensor_name='MQ3_1')
-# → {'MQ3_1_w0-2_max': ..., 'MQ3_1_w2-10_auc': ..., ...}
+features = extractor.extract(normalized_signal, sensor_name='v20')
+# → {'v20_w0-5_max': ..., 'v20_w5-15_auc': ..., ...}
 
-# Por DataFrame completo de archivo
+# Por grabación completa (toma R0 de 'base' y señal de 'medicion' por sensor)
 features = extractor.extract_from_file_data(df_raw)
 # → dict con todas las features de todos los sensores
 ```
@@ -245,7 +253,7 @@ success = trainer.train()   # ejecuta todos los pasos en secuencia
 
 ```python
 trainer.load_and_validate_data()   # carga el CSV
-trainer.prepare_features()          # separa X e y, deriva grupos (vino-lote)
+trainer.prepare_features()          # separa X e y, deriva grupos (grabación)
 trainer.split_data()                # split por grupos (StratifiedGroupKFold)
 trainer.build_pipeline()            # [PerKeyPCA ->] StandardScaler -> SVC
 trainer.optimize_hyperparameters()  # GridSearchCV + StratifiedGroupKFold (con groups)
@@ -301,20 +309,20 @@ from spec.schemas import SensorReading, FeatureVector, Prediction
 
 # Valida al construir — lanza ValueError si los datos son inválidos
 reading = SensorReading(
-    filename="AQ_Wine01.txt",
-    substance_label="AQ",          # debe ser AQ | HQ | LQ | ETH
-    sensor_data={sensor: values for sensor in EXPECTED_SENSORS},
+    filename="vino.csv",
+    substance_label="Vino",        # no puede estar vacío
+    sensor_data={sensor: values for sensor in EXPECTED_SENSORS},  # v20, v11, v02, v00
 )
 
 fv = FeatureVector(
-    filename="AQ_Wine01.txt",
-    substance_label="AQ",
-    features={"MQ3_1_w0-2_max": 0.42, ...},  # no puede estar vacío
+    filename="vino.csv",
+    substance_label="Vino",
+    features={"v20_w0-5_max": 0.42, ...},  # no puede estar vacío
 )
 
 pred = Prediction(
-    filename="AQ_Wine01.txt",
-    predicted_class="AQ",    # debe ser AQ | HQ | LQ | ETH
+    filename="vino.csv",
+    predicted_class="Vino",   # no puede estar vacío
     confidence=0.95,          # debe estar en [0, 1]
 )
 ```

@@ -22,7 +22,7 @@ def test_config_import():
         SIGNAL_CONFIG, ML_CONFIG, FEATURE_MODE,
     )
     assert PROJECT_ROOT.exists()
-    assert SIGNAL_CONFIG.sampling_frequency == 18.5
+    assert SIGNAL_CONFIG.sampling_frequency == 4.0
     print(f"  [OK] enose.config — FEATURE_MODE={FEATURE_MODE}")
 
 
@@ -33,15 +33,17 @@ def test_utils_import():
 
 def test_io_import():
     from enose.io.reader import load_sensor_file, get_files_recursive, extract_substance_label
-    assert extract_substance_label("AQ_Wine01-B01_R01.txt") == "AQ"
-    assert extract_substance_label("Ethanol_C1_R01.txt") == "ETH"
+    assert extract_substance_label("vino.csv") == "Vino"
+    assert extract_substance_label("vinoyagua.csv") == "Vino+Agua"
+    assert extract_substance_label("vinoagitacionrara.csv") == "Vino+Alcohol"
+    assert extract_substance_label("mezcla_nueva.csv") == "mezcla_nueva"  # fallback
     print("  [OK] enose.io.reader")
 
 
 def test_signal_import():
     from enose.signal.processor import SignalProcessor
     p = SignalProcessor()
-    assert p.sampling_frequency == 18.5
+    assert p.sampling_frequency == 4.0
     assert p.savgol_window % 2 != 0
     print(f"  [OK] enose.signal.processor — window={p.savgol_window}")
 

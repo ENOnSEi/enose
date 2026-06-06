@@ -9,9 +9,6 @@ from typing import Dict, Optional
 from pydantic import BaseModel, field_validator
 
 
-VALID_LABELS = {"AQ", "HQ", "LQ", "ETH"}
-
-
 class Prediction(BaseModel):
     """Predicción del clasificador para una muestra de sensor."""
 
@@ -25,8 +22,10 @@ class Prediction(BaseModel):
     @field_validator("predicted_class")
     @classmethod
     def validate_class(cls, v: str) -> str:
-        if v not in VALID_LABELS:
-            raise ValueError(f"predicted_class debe ser uno de {VALID_LABELS}, recibido: '{v}'")
+        # Las clases son las mezclas etiquetadas (ver enose.config.SUBSTANCE_LABELS);
+        # el conjunto crece al añadir grabaciones, así que solo se exige no-vacío.
+        if not v or not v.strip():
+            raise ValueError("predicted_class no puede estar vacío")
         return v
 
     @field_validator("confidence")

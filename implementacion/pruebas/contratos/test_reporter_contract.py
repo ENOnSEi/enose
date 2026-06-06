@@ -25,17 +25,17 @@ from spec.schemas.execution_report import ExecutionReport, SplitSummary
 def fake_dataset():
     rng = np.random.default_rng(0)
     return pd.DataFrame({
-        "Nombre_Archivo": [f"AQ_Wine0{i}_R01.txt" for i in range(6)],
-        "Calidad_Vino": ["AQ", "AQ", "HQ", "HQ", "LQ", "LQ"],
-        "MQ3_1_w0-2__t000": rng.random(6),
-        "MQ3_1_w0-2__t001": rng.random(6),
+        "Nombre_Archivo": [f"grab_{i}.csv" for i in range(6)],
+        "Etiqueta": ["Agua", "Agua", "Vino", "Vino", "Alcohol", "Alcohol"],
+        "v20_w0-5__t000": rng.random(6),
+        "v20_w0-5__t001": rng.random(6),
     })
 
 
 @pytest.fixture
 def fake_results():
-    y_test = np.array(["AQ", "HQ", "LQ"])
-    y_pred = np.array(["AQ", "HQ", "AQ"])
+    y_test = np.array(["Agua", "Vino", "Alcohol"])
+    y_pred = np.array(["Agua", "Vino", "Agua"])
     from sklearn.metrics import classification_report, confusion_matrix
     return {
         "best_params": {"svm__kernel": "rbf", "svm__C": 10},
@@ -70,7 +70,7 @@ class TestReporterContract:
     def test_build_returns_valid_report(self, report):
         assert isinstance(report, ExecutionReport)
         assert report.dataset.n_samples == 6
-        assert report.dataset.class_distribution == {"AQ": 2, "HQ": 2, "LQ": 2}
+        assert report.dataset.class_distribution == {"Agua": 2, "Alcohol": 2, "Vino": 2}
         assert report.conclusions  # debe derivar al menos una conclusión
 
     def test_generate_writes_artifacts(self, report, tmp_path):

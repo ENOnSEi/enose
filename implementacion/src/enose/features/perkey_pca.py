@@ -48,7 +48,7 @@ class PerKeyPCA(BaseEstimator, TransformerMixin):
 
     @staticmethod
     def _key_of(column: str) -> str:
-        """'MQ3_1_w0-2__t007' -> 'MQ3_1_w0-2'."""
+        """'v20_w0-5__t007' -> 'v20_w0-5'."""
         return column.split(SEGMENT_COL_SEP)[0]
 
     def _resolve_config(self) -> PCAConfig:

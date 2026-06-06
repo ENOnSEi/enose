@@ -1,8 +1,18 @@
 # ADR 002 — Modo de extracción de características: PCA vs Handcrafted
 
-**Estado**: Aceptado (PCA como default)  
+**Estado**: Aceptado (PCA como default) · **Revisado en V6 (default → handcrafted)**  
 **Fecha**: 2026-05-30  
 **Autor**: Jesus Veiga
+
+> **Actualización 2026-06-03 (V6 — migración a 4 sensores TGS y CSV con fases):**
+> - Con el nuevo formato cada grabación produce, por defecto, **una muestra**, por lo
+>   que el default pasa a **`handcrafted`** (features deterministas sin necesidad de
+>   ajustar un PCA con pocas muestras). `pca_signal` sigue disponible y es preferible
+>   cuando se generan muchas muestras (ventaneando la fase `medicion`).
+> - La dimensionalidad handcrafted ahora es **36 features** (4 sensores × 3 ventanas ×
+>   3 estadísticos), no 54.
+> - La agrupación para la validación por grupos es por **grabación** (sufijo `#wNN`),
+>   no por vino-lote. El resto del razonamiento de este ADR sigue vigente.
 
 ## Contexto
 

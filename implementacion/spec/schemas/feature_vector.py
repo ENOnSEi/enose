@@ -29,7 +29,7 @@ class FeatureVector(BaseModel):
         """Convierte a dict plano para construir el DataFrame maestro."""
         return {
             "Nombre_Archivo": self.filename,
-            "Calidad_Muestra": self.substance_label,
+            "Etiqueta": self.substance_label,
             **self.features,
         }
 

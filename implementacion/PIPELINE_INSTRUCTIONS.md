@@ -12,23 +12,38 @@ Python 3.10+ recomendado.
 
 ## Estructura de datos esperada
 
+Las grabaciones crudas son los CSV de la carpeta `datasets/` de la **raíz del
+repositorio** (no dentro de `implementacion/`):
+
 ```
-data/
-  raw/        ← archivos .txt de sensores organizados por sustancia
-    AQ_Wines/
-    HQ_Wines/
-    LQ_Wines/
-    Ethanol/
-  processed/  ← generado automáticamente por el pipeline
+Electronic Nose Project/
+  datasets/            ← grabaciones .csv (una por mezcla)
+    agua.csv
+    alcohol.csv
+    vino.csv
+    vinoyagua.csv
+    vinoagitacionrara.csv
+  implementacion/
+    datos/procesados/  ← generado automáticamente por el pipeline
 ```
 
-Los archivos de sensor deben estar en `data/raw/` antes de ejecutar la Fase 4.
+Cada CSV tiene cabecera `data,v20,v11,v02,v00,estado`. La columna `estado`
+marca las fases `inicio` / `base` / `medicion` (ver README).
 
 ---
 
 ## Ejecución del pipeline
 
-Todos los comandos se ejecutan desde la **raíz del proyecto** (donde está `main.py`).
+Todos los comandos se ejecutan desde `implementacion/` (donde está `main.py`).
+
+### Solo Fase 4 — Extracción de características (recomendado por ahora)
+
+```bash
+python main.py --phase 4
+```
+
+Lee los `.csv` de `datasets/`, normaliza cada sensor con su fase `base`, extrae
+features de la fase `medicion` y genera `datos/procesados/dataset_maestro.csv`.
 
 ### Pipeline completo (Fase 4 + Fase 5)
 
@@ -36,21 +51,15 @@ Todos los comandos se ejecutan desde la **raíz del proyecto** (donde está `mai
 python main.py
 ```
 
-### Solo Fase 4 — Extracción de características
-
-```bash
-python main.py --phase 4
-```
-
-Lee los .txt de `data/raw/`, extrae features y genera `data/raw/dataset_maestro_vinos.csv`.
-
 ### Solo Fase 5 — Entrenamiento del modelo
 
 ```bash
 python main.py --phase 5
 ```
 
-Requiere que `data/raw/dataset_maestro_vinos.csv` exista (generado por la Fase 4).
+Requiere que `datos/procesados/dataset_maestro.csv` exista y que haya **≥2
+grabaciones por clase** (la validación es por grupos; con una sola grabación por
+mezcla el split train/test no es posible sin fuga y la fase se detiene avisando).
 
 ---
 
@@ -58,12 +67,12 @@ Requiere que `data/raw/dataset_maestro_vinos.csv` exista (generado por la Fase 4
 
 | Archivo | Modo | Descripción |
 |---|---|---|
-| `data/raw/dataset_maestro_vinos.csv` | ambos | Dataset maestro con todas las features |
-| `data/processed/best_model.pkl` | ambos | Pipeline SVM entrenado (StandardScaler + SVM) |
-| `data/processed/training_results.pkl` | ambos | Métricas y resultados del entrenamiento |
-| `data/processed/pca_transformers.pkl` | `pca_signal` | Modelos PCA por (sensor × ventana). Necesario para inferencia |
-| `data/processed/visualizations/` | ambos | Matriz de confusión, precisiones, reporte de clasificación |
-| `logs/enose_project.log` | ambos | Log de ejecución completo |
+| `datos/procesados/dataset_maestro.csv` | ambos | Dataset maestro con todas las features |
+| `datos/procesados/best_model.pkl` | ambos | Pipeline SVM entrenado (incluye PerKeyPCA en modo `pca_signal`) |
+| `datos/procesados/training_results.pkl` | ambos | Métricas y resultados del entrenamiento |
+| `datos/procesados/visualizations/` | ambos | Distribución de clases, matriz de confusión, precisiones |
+| `informes/informe_<timestamp>/` | Fase 5 | Informe de ejecución (Markdown + JSON + PNGs) |
+| `registros/enose_project.log` | ambos | Log de ejecución completo |
 
 ---
 
@@ -72,36 +81,30 @@ Requiere que `data/raw/dataset_maestro_vinos.csv` exista (generado por la Fase 4
 Todos los parámetros están en `src/enose/config.py` como dataclasses tipadas (inmutables):
 
 ```python
-# Modo de extracción de características
-FEATURE_MODE = 'pca_signal'   # 'pca_signal' (recomendado) | 'handcrafted'
+FEATURE_MODE = 'handcrafted'   # 'handcrafted' (por defecto) | 'pca_signal'
 
-# Parámetros de señal
 SIGNAL_CONFIG = SignalConfig(
-    sampling_frequency=18.5,   # Hz
-    savgol_window=15,           # Savitzky-Golay (debe ser impar)
+    sampling_frequency=4.0,     # Hz (250 ms entre muestras)
+    savgol_window=9,            # Savitzky-Golay (debe ser impar)
     savgol_polyorder=3,
-    baseline_seconds=2.0,
-    time_windows=((0, 2), (2, 10), (10, 20)),
+    baseline_seconds=2.0,       # fallback si la grabación no tiene fase 'base'
+    time_windows=((0, 5), (5, 15), (15, 40)),   # s desde el inicio de 'medicion'
 )
 
-# PCA
 PCA_CONFIG = PCAConfig(explained_variance_threshold=0.95)
-
-# SVM + GridSearch
 ML_CONFIG = MLConfig(n_splits_cv=3, scoring_metric='balanced_accuracy')
-GRID_PARAMS = [...]   # Kernels: linear, rbf | C: [0.1, 1, 10, 100]
 ```
 
-### Cambiar modo de extracción
+### Generar más muestras por grabación (ventaneo)
 
-Editar una línea en `src/enose/config.py`:
+Por defecto cada grabación es una muestra. Para trocear la fase `medicion` en
+varias muestras, edita `src/enose/pipeline/dataset.py`:
 
 ```python
-FEATURE_MODE = 'pca_signal'   # PCA por sensor y ventana (recomendado)
-FEATURE_MODE = 'handcrafted'  # max, AUC, slope por ventana
+MEASUREMENT_WINDOWING = (8.0, 0.5)   # ventanas de 8 s con 50% de solape
 ```
 
-Luego re-ejecutar la Fase 4 completa.
+y re-ejecuta la Fase 4.
 
 ---
 
@@ -109,13 +112,13 @@ Luego re-ejecutar la Fase 4 completa.
 
 ```bash
 # Tests de contrato (Protocol compliance + validación de schemas)
-python -m pytest tests/contracts/ -v
+python -m pytest pruebas/contratos/ -v
 
 # Smoke test de imports
-python tests/unit/test_imports.py
+python pruebas/unitarias/test_imports.py
 
-# Test de entrenamiento (requiere dataset generado)
-python tests/unit/test_phase5.py
+# Test de entrenamiento (requiere dataset y ≥2 grabaciones/clase)
+python pruebas/unitarias/test_phase5.py
 ```
 
 ---
@@ -126,28 +129,38 @@ python tests/unit/test_phase5.py
 2. Crea tu clase en `src/enose/features/mi_extractor.py`
 3. Añade una rama en `src/enose/pipeline/dataset.py` (`FEATURE_MODE == 'mi_modo'`)
 4. Registra el modo en `FEATURE_MODE` de `config.py`
-5. Añade tests en `tests/contracts/`
+5. Añade tests en `pruebas/contratos/`
 
 ---
 
 ## Añadir un nuevo sensor
 
-1. Actualiza `SENSOR_COLUMNS` en `src/enose/config.py`
+1. Actualiza `SENSOR_MODELS` / `SENSOR_COLUMNS` en `src/enose/config.py`
 2. Actualiza `EXPECTED_SENSORS` en `spec/schemas/sensor_reading.py`
-3. Los tests de schema verificarán automáticamente la coherencia
+3. Asegúrate de que el sketch de Arduino y el `serial-reader` emiten la columna nueva
+4. Los tests de schema verificarán la coherencia
 
 ---
 
 ## Solución de problemas comunes
 
 **`ModuleNotFoundError: No module named 'enose'`**
-→ Ejecuta siempre desde la raíz del proyecto, no desde dentro de `src/`.
+→ Ejecuta siempre desde `implementacion/`, no desde dentro de `src/`.
 
-**`FileNotFoundError` en Fase 5**
+**`No hay grabaciones .csv en ...`**
+→ Deja los CSV en la carpeta `datasets/` de la raíz del repositorio.
+
+**`FileNotFoundError` / dataset no encontrado en Fase 5**
 → Ejecuta primero la Fase 4 para generar el dataset.
 
-**`pca_transformers.pkl` no encontrado al cargar el modelo**
-→ Este archivo se genera en la Fase 4 (modo `pca_signal`). Ejecuta `--phase 4` antes de usar el modelo para inferencia.
+**`Insuficientes grupos por clase para un split por grupos`**
+→ Necesitas ≥2 grabaciones de cada mezcla. Graba más CSVs (o activa el ventaneo
+   de `medicion` solo aporta muestras, no grupos nuevos: hacen falta grabaciones
+   distintas por clase).
+
+**`UnicodeEncodeError` en la consola de Windows**
+→ `main.py` ya fuerza UTF-8 en la salida; si lanzas otro script, exporta
+   `PYTHONUTF8=1`.
 
 **Errores de importación en VS Code (subrayado rojo)**
-→ Verifica que `pyrightconfig.json` en la raíz incluye `"extraPaths": ["src"]`.
+→ Verifica que `pyrightconfig.json` incluye `"extraPaths": ["src"]`.

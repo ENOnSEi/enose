@@ -3,12 +3,13 @@ Procesador de señal de sensor.
 
 Implementa SignalProcessorProtocol (spec/contracts/processor.py):
   - Suavizado Savitzky-Golay
-  - Normalización por línea base (R0 - Rs) / R0
+  - Normalización por línea base (R0 - Rs) / R0, donde R0 sale de la fase 'base'
+    de la grabación (aire limpio) y Rs es la respuesta de la fase 'medicion'.
   - Extracción de características por ventana temporal (modo handcrafted)
   - Segmentación de señal normalizada por ventana (modo PCA)
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.signal import savgol_filter
@@ -21,7 +22,7 @@ logger = setup_logging(__name__)
 
 class SignalProcessor:
     """
-    Procesador de señal para sensores MQ.
+    Procesador de señal para los sensores TGS de la nariz electrónica.
 
     Conforme a SignalProcessorProtocol — se puede sustituir por cualquier
     clase que implemente el mismo protocolo sin tocar el pipeline.
@@ -43,28 +44,47 @@ class SignalProcessor:
     # ------------------------------------------------------------------
 
     def smooth_signal(self, signal: np.ndarray) -> np.ndarray:
-        if len(signal) < self.savgol_window:
+        signal = np.asarray(signal, dtype=float)
+        if len(signal) < self.savgol_window or len(signal) <= self.savgol_polyorder:
             logger.warning("Señal demasiado corta para Savitzky-Golay. Devolviendo original.")
             return signal
         return savgol_filter(signal, window_length=self.savgol_window, polyorder=self.savgol_polyorder)
 
-    def normalize_by_baseline(self, signal: np.ndarray) -> np.ndarray:
-        """Normalización fraccional: (R0 - Rs) / R0."""
-        n = len(signal) if len(signal) < self.baseline_samples else self.baseline_samples
-        R0 = np.mean(signal[:n])
+    def normalize_by_baseline(
+        self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None
+    ) -> np.ndarray:
+        """
+        Normalización fraccional: (R0 - Rs) / R0.
+
+        R0 (resistencia en aire limpio) se estima como:
+          - la media de ``baseline`` (fase 'base' de la grabación), si se aporta;
+          - si no, la media de las primeras ``baseline_samples`` muestras de la
+            propia señal (fallback para grabaciones sin fase 'base').
+        """
+        signal = np.asarray(signal, dtype=float)
+        if baseline is not None and len(baseline) > 0:
+            R0 = float(np.mean(np.asarray(baseline, dtype=float)))
+        else:
+            n = len(signal) if len(signal) < self.baseline_samples else self.baseline_samples
+            n = max(n, 1)
+            R0 = float(np.mean(signal[:n]))
+
         if R0 == 0:
             logger.warning("R0 = 0. Usando Z-score como normalización de respaldo.")
             return (signal - np.mean(signal)) / (np.std(signal) + 1e-10)
         return (R0 - signal) / R0
 
-    def process_signal(self, signal: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def process_signal(
+        self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Retorna (señal_suavizada, señal_normalizada)."""
         smoothed = self.smooth_signal(signal)
-        normalized = self.normalize_by_baseline(smoothed)
+        normalized = self.normalize_by_baseline(smoothed, baseline)
         return smoothed, normalized
 
     def extract_features(self, signal: np.ndarray) -> Dict[str, float]:
         """Extrae max, AUC y slope por cada ventana temporal (modo handcrafted)."""
+        signal = np.asarray(signal, dtype=float)
         features: Dict[str, float] = {}
         total_sec = len(signal) * self.dt
 
@@ -86,6 +106,7 @@ class SignalProcessor:
 
     def get_signal_segments(self, signal: np.ndarray) -> Dict[str, np.ndarray]:
         """Retorna los arrays de señal por ventana (modo PCA)."""
+        signal = np.asarray(signal, dtype=float)
         segments: Dict[str, np.ndarray] = {}
         total_sec = len(signal) * self.dt
 

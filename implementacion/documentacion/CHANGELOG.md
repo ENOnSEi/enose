@@ -2,6 +2,53 @@
 
 ---
 
+## V6 — Migración al hardware propio: 4 sensores TGS y CSV con fases (2026-06-03)
+
+### Motivación
+El proyecto deja atrás el dataset txt de vinos (6 sensores MQ + humedad/temperatura,
+un fichero = una medición) y pasa a usar las grabaciones del `serial-reader` propio:
+CSV con cabecera `data,v20,v11,v02,v00,estado`, donde cada fichero es una grabación
+continua de una mezcla con fases `inicio`/`base`/`medicion`.
+
+### Cambios
+
+**Nuevo formato de entrada (CSV con `estado`)**
+- `io/reader.py` lee CSV en vez de txt; separa por `estado` y expone
+  `get_baseline_and_signal` (R0 de la fase `base`, señal de la fase `medicion`).
+- `signal/processor.py`: `normalize_by_baseline(signal, baseline=None)` usa el R0 de
+  la fase `base`; `inicio` se descarta. Frecuencia de muestreo 18.5 Hz → **4 Hz** (250 ms),
+  ventana Savitzky-Golay 15 → 9, ventanas temporales `(0,5),(5,15),(15,40)` s.
+
+**Sensores y etiquetas**
+- 6 sensores MQ + humedad/temperatura → **4 sensores TGS** (`v20`=TGS2620, `v11`=TGS2611,
+  `v02`=TGS2602, `v00`=TGS2600).
+- Clases AQ/HQ/LQ/ETH → mezclas etiquetadas por nombre de fichero (`SUBSTANCE_LABELS`,
+  con fallback al propio nombre). Columna de etiqueta `Calidad_Vino` → **`Etiqueta`**.
+
+**Datos y rutas**
+- Entrada: carpeta `datasets/` de la raíz del repo (antes `datos/brutos/*.txt`).
+- Dataset maestro: `datos/procesados/dataset_maestro.csv`.
+
+**Muestreo y agrupación**
+- Por defecto **una grabación = una muestra** (modo por defecto `handcrafted`). Se
+  documenta y deja listo el ventaneo de `medicion` (`MEASUREMENT_WINDOWING` en
+  `pipeline/dataset.py`) para generar varias muestras por grabación.
+- La validación por grupos agrupa por **grabación** (antes por vino-lote): la Fase 5
+  requiere ≥2 grabaciones por clase y se detiene avisando si no las hay.
+
+**Limpieza**
+- Eliminados los datos txt (`datos/brutos/`), los artefactos de modelo entrenados sobre
+  el dataset antiguo y la documentación del caso de uso de vinos.
+- `main.py` fuerza UTF-8 en la salida y el `FileHandler` del log usa `encoding="utf-8"`
+  (evita `UnicodeEncodeError` en la consola de Windows).
+
+### Comportamiento
+La Fase 4 produce el dataset desde los CSV de `datasets/`. La Fase 5 mantiene el esquema
+(PerKeyPCA → StandardScaler → SVM con `StratifiedGroupKFold`), pero entrenar requiere
+varias grabaciones por mezcla.
+
+---
+
 ## V5 — Validación honesta y limpieza de código heredado (2026-05-30)
 
 ### Motivación

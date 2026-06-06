@@ -22,7 +22,7 @@ class DatasetSummary(BaseModel):
     feature_mode: str                       # 'handcrafted' | 'pca_signal'
     n_samples: int
     n_features: int
-    n_groups: int                           # nº de vinos-lote distintos (para split por grupos)
+    n_groups: int                           # nº de grabaciones distintas (para split por grupos)
     class_distribution: Dict[str, int]      # clase -> nº de muestras
     sensors: List[str] = []
 
@@ -32,7 +32,7 @@ class SplitSummary(BaseModel):
 
     n_train: int
     n_test: int
-    n_test_groups: int                      # vinos en test, disjuntos de train
+    n_test_groups: int                      # grabaciones en test, disjuntas de train
     test_size_effective: float              # proporción real de test
 
 

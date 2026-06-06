@@ -12,6 +12,14 @@ import sys
 import argparse
 from pathlib import Path
 
+# La consola de Windows suele usar cp1252 y rompe al imprimir caracteres como
+# '→' o acentos. Forzar UTF-8 en la salida evita UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from enose.config import DATA_PROCESSED_DIR, DATA_RAW_DIR, DATASET_MAESTRO_PATH, PROJECT_ROOT

@@ -7,7 +7,7 @@ from typing import List, Optional, Union
 import numpy as np
 import pandas as pd
 
-from enose.config import LOGGING_CONFIG, SENSOR_COLUMNS
+from enose.config import LABEL_COLUMN, LOGGING_CONFIG, SENSOR_COLUMNS
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ def setup_logging(name: str = __name__) -> logging.Logger:
         logger.addHandler(ch)
 
         try:
-            fh = logging.FileHandler(LOGGING_CONFIG.log_file)
+            fh = logging.FileHandler(LOGGING_CONFIG.log_file, encoding="utf-8")
             fh.setFormatter(fmt)
             logger.addHandler(fh)
         except Exception as e:
@@ -40,7 +40,7 @@ def setup_logging(name: str = __name__) -> logging.Logger:
 
 def validate_sensor_data(df: pd.DataFrame) -> tuple[bool, List[str]]:
     issues = []
-    required = SENSOR_COLUMNS["sensors"]
+    required = list(SENSOR_COLUMNS["sensors"])
 
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -84,7 +84,7 @@ def create_output_directory(path: Union[str, Path]) -> Path:
 def print_data_summary(df: pd.DataFrame, title: str = "Resumen de Datos") -> None:
     print(f"\n{'='*70}\n{title:^70}\n{'='*70}")
     print(f"Dimensiones: {df.shape[0]} filas × {df.shape[1]} columnas")
-    label_col = next((c for c in ["Calidad_Vino", "Calidad_Muestra"] if c in df.columns), None)
+    label_col = LABEL_COLUMN if LABEL_COLUMN in df.columns else None
     if label_col:
         print(f"\nDistribución de clases:\n{df[label_col].value_counts()}")
     print("=" * 70)
@@ -132,7 +132,7 @@ def plot_signal_processing(
 
 def plot_class_distribution(
     df: pd.DataFrame,
-    label_column: str = "Calidad_Vino",
+    label_column: str = LABEL_COLUMN,
     output_path: Optional[Path] = None,
 ) -> None:
     try:

@@ -28,7 +28,7 @@ class HandcraftedExtractorProtocol(Protocol):
         Parámetros
         ----------
         normalized_signal : array de floats, señal post-normalización
-        sensor_name       : nombre del sensor (ej: 'MQ3_1')
+        sensor_name       : nombre del sensor (ej: 'v20')
 
         Retorna
         -------

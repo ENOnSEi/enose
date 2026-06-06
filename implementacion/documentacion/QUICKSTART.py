@@ -24,10 +24,10 @@ PASO 2: Ejecutar el pipeline completo
     python main.py
 
 ¿Eso es todo! El script:
-✓ Buscará archivos de sensores en data/raw/
-✓ Generará dataset_maestro_vinos.csv (FASE 4)
-✓ Entrenará un modelo SVM (FASE 5)
-✓ Guardará resultados en data/processed/
+✓ Buscará grabaciones .csv en datasets/ (raíz del repo)
+✓ Generará datos/procesados/dataset_maestro.csv (FASE 4)
+✓ Entrenará un modelo SVM si hay ≥2 grabaciones/clase (FASE 5)
+✓ Guardará resultados en datos/procesados/
 
 ¿Quiero más control?
 ====================
@@ -40,7 +40,7 @@ Solo generar dataset (sin entrenar modelo):
 
 Solo entrenar modelo (sin generar dataset):
     python main.py --phase 5
-    (requiere que dataset_maestro_vinos.csv exista)
+    (requiere que dataset_maestro.csv exista y ≥2 grabaciones/clase)
 
 ¿Dónde está cada cosa?
 ======================
@@ -89,13 +89,14 @@ Ejemplo:
 
 Después de ejecutar main.py:
 
-    data/processed/
-    ├── best_model.pkl            ← Modelo entrenado
+    datos/procesados/
+    ├── dataset_maestro.csv        ← Dataset maestro (Fase 4)
+    ├── best_model.pkl             ← Modelo entrenado (Fase 5)
     ├── training_results.pkl       ← Métricas y resultados
-    └── confusion_matrix.png       ← Gráfica
+    └── visualizations/            ← Gráficas
 
 También:
-    enose_project.log             ← Archivo de logs completo
+    registros/enose_project.log   ← Archivo de logs completo
 
 ¿Necesito cambiar algo?
 ========================
@@ -103,8 +104,8 @@ También:
 Los parámetros están en src/enose/config.py (dataclasses tipadas):
 
     SignalConfig(
-        sampling_frequency=18.5,
-        savgol_window=15,
+        sampling_frequency=4.0,
+        savgol_window=9,
         baseline_seconds=2.0,
     )
 
@@ -119,8 +120,8 @@ Los parámetros están en src/enose/config.py (dataclasses tipadas):
 ¿Qué pasa si hay errores?
 ==========================
 
-1. Verifica que los datos estén en data/raw/
-2. Revisa enose_project.log para errores específicos
+1. Verifica que los CSV estén en datasets/ (raíz del repo)
+2. Revisa registros/enose_project.log para errores específicos
 3. Lee README.md para troubleshooting
 4. Ejecuta con --verbose para más detalles
 
@@ -130,7 +131,7 @@ Los parámetros están en src/enose/config.py (dataclasses tipadas):
 Sí! El modelo se guarda como pickle:
 
     import pickle
-    with open('data/processed/best_model.pkl', 'rb') as f:
+    with open('datos/procesados/best_model.pkl', 'rb') as f:
         model = pickle.load(f)
     
     # Usar para predicción

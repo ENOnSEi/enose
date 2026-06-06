@@ -6,11 +6,13 @@ Calcula max, AUC y slope por ventana temporal sobre la señal normalizada.
 No requiere fase de ajuste — las características son deterministas.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import numpy as np
+import pandas as pd
 
 from enose.config import SENSOR_COLUMNS, SignalConfig
+from enose.io.reader import get_baseline_and_signal
 from enose.signal.processor import SignalProcessor
 from enose.utils import setup_logging
 
@@ -34,20 +36,23 @@ class HandcraftedExtractor:
         raw_features = self._processor.extract_features(normalized_signal)
         return {f"{sensor_name}_{k}": v for k, v in raw_features.items()}
 
-    def extract_from_file_data(self, df, sensor_cols=None) -> Dict[str, float]:
+    def extract_from_file_data(self, df: pd.DataFrame, sensor_cols=None) -> Dict[str, float]:
         """
-        Extrae características de todos los sensores en un DataFrame de sensor.
-        Entrada: DataFrame crudo del archivo .txt.
+        Extrae características de todos los sensores en una grabación.
+
+        Entrada: DataFrame crudo de la grabación CSV (columnas data, v20, v11,
+        v02, v00, estado). Por cada sensor se toma R0 de la fase 'base' y la
+        respuesta de la fase 'medicion'.
         """
         if sensor_cols is None:
             sensor_cols = SENSOR_COLUMNS["sensors"]
 
         result: Dict[str, float] = {}
         for sensor in sensor_cols:
-            if sensor not in df.columns:
+            pair = get_baseline_and_signal(df, sensor)
+            if pair is None:
                 continue
-            raw = df[sensor].values
-            _, normalized = self._processor.process_signal(raw)
-            features = self.extract(normalized, sensor)
-            result.update(features)
+            baseline, signal = pair
+            _, normalized = self._processor.process_signal(signal, baseline)
+            result.update(self.extract(normalized, sensor))
         return result

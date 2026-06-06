@@ -22,8 +22,8 @@ def synthetic_segments():
     """Genera segmentos sintéticos para 2 combinaciones sensor×ventana."""
     rng = np.random.default_rng(0)
     return {
-        "MQ3_1_w2-10": [rng.random(148) for _ in range(30)],
-        "MQ4_1_w2-10": [rng.random(148) for _ in range(30)],
+        "v20_w5-15": [rng.random(40) for _ in range(30)],
+        "v11_w5-15": [rng.random(40) for _ in range(30)],
     }
 
 

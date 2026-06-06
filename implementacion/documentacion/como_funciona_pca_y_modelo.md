@@ -1,19 +1,19 @@
 # Cómo funciona el PCA y el modelo — guía del proceso completo
 
-Este documento explica, paso a paso y con el "por qué" de cada decisión, cómo el pipeline transforma las curvas crudas de los sensores en una predicción de calidad de vino.
+Este documento explica, paso a paso y con el "por qué" de cada decisión, cómo el pipeline transforma las curvas crudas de los sensores en una predicción de la mezcla medida.
 
 ---
 
 ## El problema: de señal temporal a vector de longitud fija
 
-Cada vez que el array de sensores huele una muestra de vino, cada uno de los 6 sensores genera una **curva de resistencia eléctrica en el tiempo** (≈20 segundos, muestreados a 18.5 Hz → ~370 puntos).
+Cada vez que el array de sensores huele una mezcla, cada uno de los 4 sensores TGS genera una **curva de resistencia eléctrica en el tiempo** durante la fase `medicion` (muestreada a 4 Hz, 250 ms entre puntos; la duración varía por grabación).
 
 ```
 Resistencia
     │       ╭──╮
     │      ╱    ╲
-    │─────╱      ╲──────  ← sensor MQ3_1 durante una medición
-    └──────────────────── tiempo (20 s)
+    │─────╱      ╲──────  ← sensor v20 (TGS2620) durante la fase 'medicion'
+    └──────────────────── tiempo
 ```
 
 El clasificador (SVM) necesita vectores de **longitud fija y comparable**. No puede comer series temporales de longitud variable directamente. Por eso existe la cadena de procesamiento.
@@ -46,11 +46,11 @@ La señal normalizada se divide en 3 ventanas fijas:
 
 | Ventana | Intervalo | Qué captura |
 |---------|-----------|-------------|
-| `w0-2`  | 0–2 s     | Respuesta inicial, primer contacto con el volátil |
-| `w2-10` | 2–10 s    | Respuesta principal, máxima concentración |
-| `w10-20`| 10–20 s   | Saturación / estabilización del sensor |
+| `w0-5`  | 0–5 s     | Respuesta inicial, primer contacto con el volátil |
+| `w5-15` | 5–15 s    | Respuesta principal, máxima concentración |
+| `w15-40`| 15–40 s   | Saturación / estabilización del sensor |
 
-Con 6 sensores × 3 ventanas = **18 combinaciones (sensor × ventana)**. Cada una tiene su propia dinámica y aporta información complementaria.
+Con 4 sensores × 3 ventanas = **12 combinaciones (sensor × ventana)**. Cada una tiene su propia dinámica y aporta información complementaria.
 
 ### Paso 4 — Serialización de segmentos crudos
 
@@ -68,13 +68,13 @@ A partir del CSV con los segmentos crudos, todo ocurre dentro de un **Pipeline d
 DataFrame con segmentos crudos
          │
          ▼
-  [1] PerKeyPCA            ← ajusta 18 PCAs, uno por (sensor × ventana)
+  [1] PerKeyPCA            ← ajusta 12 PCAs, uno por (sensor × ventana)
          │
          ▼
   [2] StandardScaler       ← normaliza cada componente principal a media=0, std=1
          │
          ▼
-  [3] SVM (kernel RBF)     ← clasifica en AQ / HQ / LQ
+  [3] SVM (kernel RBF)     ← clasifica la mezcla (Agua / Vino / Vino+Agua / ...)
          │
          ▼
     Predicción
@@ -88,13 +88,13 @@ El Pipeline garantiza que cuando se hace validación cruzada (GridSearchCV), cad
 
 ### La idea general
 
-El segmento de la ventana `w2-10` del sensor MQ3_1 tiene ~148 puntos. En el dataset hay 235 muestras. PCA toma esas 235 curvas de 148 dimensiones y busca las **direcciones de máxima variación**.
+El segmento de la ventana `w5-15` del sensor v20 tiene ~40 puntos (a 4 Hz). Si hay N muestras en el dataset, PCA toma esas N curvas y busca las **direcciones de máxima variación**.
 
-Dicho de otra forma: entre todos los vinos probados, ¿en qué instantes temporales se diferencian más las curvas de ese sensor? Esos instantes son los que más "votan" en las primeras componentes principales (PCs).
+Dicho de otra forma: entre todas las mezclas probadas, ¿en qué instantes temporales se diferencian más las curvas de ese sensor? Esos instantes son los que más "votan" en las primeras componentes principales (PCs).
 
 ```
-235 muestras × 148 dimensiones  →  PCA  →  235 muestras × k dimensiones
-                                            (k << 148, captura 95% varianza)
+N muestras × ~40 dimensiones  →  PCA  →  N muestras × k dimensiones
+                                          (k << 40, captura 95% varianza)
 ```
 
 ### Por qué un PCA por (sensor × ventana) y no uno global
@@ -124,7 +124,7 @@ El parámetro `explained_variance_threshold = 0.95` en `config.py` hace que skle
 
 ### Por qué SVM
 
-Con datasets pequeños (235 muestras, 3 clases), el SVM con kernel RBF funciona bien porque:
+Con datasets pequeños (pocas muestras, varias clases), el SVM con kernel RBF funciona bien porque:
 - Maximiza el margen de separación entre clases (robusto a overfitting)
 - El kernel RBF proyecta implícitamente los datos a un espacio de dimensión infinita, lo que permite separar clases que no son linealmente separables en el espacio de PCs
 
@@ -137,7 +137,7 @@ El GridSearchCV busca los mejores valores de:
 | `C` | Penalización por errores de clasificación. Alto → ajuste fino (riesgo overfitting), bajo → margen amplio (más general) |
 | `gamma` | Radio de influencia de cada muestra en el kernel RBF. Alto → fronteras muy locales, bajo → fronteras suaves |
 
-El grid actual prueba las combinaciones de `C ∈ {0.1, 1, 10, 100}` y `gamma ∈ {scale, auto, 0.1, 0.01}` con validación cruzada de 3 folds **por grupos** (`StratifiedGroupKFold`, ver abajo). La métrica que decide el mejor modelo es **`balanced_accuracy`** (media de los recalls por clase), no `accuracy`, porque las clases están desbalanceadas (LQ=141, HQ=51, AQ=43) y `accuracy` premiaría el sesgo a la clase mayoritaria.
+El grid actual prueba las combinaciones de `C ∈ {0.1, 1, 10, 100}` y `gamma ∈ {scale, auto, 0.1, 0.01}` con validación cruzada de 3 folds **por grupos** (`StratifiedGroupKFold`, ver abajo). La métrica que decide el mejor modelo es **`balanced_accuracy`** (media de los recalls por clase), no `accuracy`, porque si las clases quedan desbalanceadas `accuracy` premiaría el sesgo a la clase mayoritaria.
 
 ### Por qué StandardScaler entre PCA y SVM
 
@@ -145,29 +145,33 @@ El SVM con kernel RBF es sensible a la escala de las features. Aunque todos los 
 
 ---
 
-## Validación por grupos: por qué el test no es 100 %
+## Validación por grupos: evitar la fuga entre ventanas de una misma grabación
 
-Cada vino-lote no se mide una sola vez, sino **~11 veces** (réplicas, sufijo `_R01`, `_R02`, … en el nombre de archivo). Aunque hay 235 mediciones, en realidad solo existen **22 vinos independientes**.
+Si se generan varias muestras por grabación (ventaneando la fase `medicion`), esas
+ventanas son casi idénticas entre sí. Con un split aleatorio normal acabarían
+repartidas entre train y test, y el modelo "reconocería" en el test grabaciones que
+ya vio en train → memoriza en vez de generalizar, inflando la accuracy de test.
 
-Si se hace un split aleatorio normal, las réplicas casi idénticas del mismo vino acaban repartidas entre train y test. El modelo entonces "reconoce" en el test vinos que ya vio en train → memoriza en vez de generalizar, y la accuracy de test sube de forma artificial (llegaba al **100 %**).
+La solución es agrupar por **grabación** (`StratifiedGroupKFold`): el identificador de
+grupo se obtiene del nombre de fichero quitando el sufijo de ventana `#wNN`, y se
+garantiza que **ninguna grabación aparezca a la vez en train y test**, ni en el split
+externo ni en los folds de la CV. Así la métrica refleja la capacidad real de clasificar
+**grabaciones nuevas**.
 
-La solución es agrupar por vino-lote (`StratifiedGroupKFold`): el identificador de grupo se obtiene del nombre de archivo quitando el sufijo `_R{RR}`, y se garantiza que **ningún vino aparezca a la vez en train y test**, ni en el split externo ni en los folds de la CV. Con esto la métrica refleja la capacidad real de clasificar **vinos nuevos**:
-
-```
-Test accuracy ≈ 86 %   |   balanced accuracy ≈ 79 %
-```
+> Por eso la Fase 5 exige **≥2 grabaciones por clase**: con una sola grabación por
+> mezcla no hay forma de tener grabaciones distintas en train y en test.
 
 Es más baja que el 100 % anterior, pero es la cifra honesta. Bajar de un 100 % "falso" a un 86 % real **no es empeorar**: es dejar de engañarse.
 
 ---
 
-## Inferencia: clasificar un vino nuevo
+## Inferencia: clasificar una mezcla nueva
 
-Para predecir la calidad de una nueva muestra con el modelo entrenado:
+Para predecir la mezcla de una nueva grabación con el modelo entrenado:
 
-1. Medir los 6 sensores durante ~20 segundos → 6 series temporales
-2. Aplicar suavizado Savitzky-Golay y normalización por línea base (mismo proceso que en entrenamiento)
-3. Segmentar en las 3 ventanas temporales → 18 segmentos
+1. Grabar los 4 sensores TGS con sus fases `base`/`medicion` → 4 series temporales
+2. Tomar R0 de la fase `base`, aplicar Savitzky-Golay y normalización por línea base (mismo proceso que en entrenamiento)
+3. Segmentar la fase `medicion` en las 3 ventanas temporales → 12 segmentos
 4. Recortar/rellenar cada segmento a la longitud fija aprendida en entrenamiento
 5. Construir una fila con columnas `{sensor}_{ventana}__t{idx}`
 6. Pasar la fila a `best_model.pkl` — el Pipeline (PerKeyPCA + StandardScaler + SVM) hace el resto
@@ -175,7 +179,7 @@ Para predecir la calidad de una nueva muestra con el modelo entrenado:
 ```python
 import pickle, pandas as pd
 model = pickle.load(open("datos/procesados/best_model.pkl", "rb"))
-pred = model.predict(nueva_fila_df)   # → ['HQ']
+pred = model.predict(nueva_fila_df)   # → ['Vino+Agua']
 ```
 
 > El SVM se entrena con `probability=False` (las métricas usan `predict`, no probabilidades),
@@ -189,16 +193,16 @@ El PCA, el escalado y la clasificación viajan todos dentro del mismo objeto Pip
 ## Resumen visual del flujo completo
 
 ```
-Archivos .txt (sensores MQ × 20 s)
+Grabaciones .csv (4 sensores TGS; fases base/medicion)
          │
          │  Fase 4
-         ├─ Suavizado Savitzky-Golay
-         ├─ Normalización (R0 - Rs) / R0
-         ├─ Segmentación en 3 ventanas × 6 sensores = 18 segmentos
+         ├─ R0 de la fase 'base' + suavizado Savitzky-Golay
+         ├─ Normalización (R0 - Rs) / R0 sobre la fase 'medicion'
+         ├─ Segmentación en 3 ventanas × 4 sensores = 12 segmentos
          └─ CSV con segmentos crudos (columnas {sensor}_{ventana}__t{idx})
          │
          │  Fase 5 (split por grupos; PCA/scaler solo sobre train de cada fold)
-         ├─ PerKeyPCA: 18 PCAs independientes → vector de ~50 features
+         ├─ PerKeyPCA: 12 PCAs independientes → vector de features
          ├─ StandardScaler: media=0, std=1
          └─ SVM RBF: GridSearchCV 3-fold StratifiedGroupKFold (balanced_accuracy) → best_model.pkl
          │

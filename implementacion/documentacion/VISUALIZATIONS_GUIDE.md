@@ -67,8 +67,8 @@ Histogramas de las 6 características principales con:
 - Entender el rango de valores típicos
 
 **Características mostradas**:
-- `MQ3_1_max`, `MQ4_1_max`, `MQ6_1_max`
-- `MQ3_1_auc`, `MQ4_1_auc`, `MQ6_1_auc`
+- `v20_w0-5_max`, `v11_w0-5_max`, `v02_w0-5_max`
+- `v20_w0-5_auc`, `v11_w0-5_auc`, `v02_w0-5_auc`
 - ... y más según disponibilidad
 
 ---
@@ -239,7 +239,7 @@ from pathlib import Path
 import pandas as pd
 
 # Cargar datos
-df = pd.read_csv('data/raw/dataset_maestro_vinos.csv')
+df = pd.read_csv('datos/procesados/dataset_maestro.csv')
 
 # Generar múltiples visualizaciones
 plot_class_distribution(df, output_path='clases.png')
@@ -253,8 +253,8 @@ plot_correlation_heatmap(df, output_path='correlacion.png')
 import matplotlib.pyplot as plt
 
 # Graficar una característica específica por clase
-for clase in df['Calidad_Vino'].unique():
-    data = df[df['Calidad_Vino'] == clase]['MQ3_1_max']
+for clase in df['Etiqueta'].unique():
+    data = df[df['Etiqueta'] == clase]['v20_w0-5_max']
     plt.hist(data, alpha=0.5, label=clase)
 
 plt.legend()

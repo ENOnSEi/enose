@@ -95,8 +95,8 @@ La regla es: **validar en la frontera, confiar dentro**. Una vez que un objeto `
 #### Ejemplo: flujo completo de datos a través de schemas
 
 ```
-Archivo .txt  →  SensorReading  →  FeatureVector  →  Prediction
-   (disco)       (entrada)       (procesamiento)     (salida)
+Grabación .csv  →  SensorReading  →  FeatureVector  →  Prediction
+   (disco)         (entrada)        (procesamiento)     (salida)
 ```
 
 **`spec/schemas/sensor_reading.py`** — entrada al pipeline:
@@ -104,26 +104,25 @@ Archivo .txt  →  SensorReading  →  FeatureVector  →  Prediction
 ```python
 class SensorReading(BaseModel):
     filename: str
-    substance_label: str               # validado: debe ser AQ, HQ, LQ o ETH
-    sensor_data: Dict[str, List[float]] # validado: deben existir los 6 sensores MQ
-    humidity: List[float] = []
-    temperature: List[float] = []
+    substance_label: str                # validado: no puede estar vacío
+    sensor_data: Dict[str, List[float]] # validado: deben existir los 4 sensores TGS
+    states: List[str] = []              # fase por muestra: inicio/base/medicion
 
     @field_validator("substance_label")
     def validate_label(cls, v):
-        if v not in {"AQ", "HQ", "LQ", "ETH"}:
+        if not v or not v.strip():
             raise ValueError(...)
         return v
 
     @field_validator("sensor_data")
     def validate_sensors(cls, v):
-        missing = {"MQ3_1", "MQ4_1", "MQ6_1", "MQ3_2", "MQ4_2", "MQ6_2"} - v.keys()
+        missing = {"v20", "v11", "v02", "v00"} - v.keys()
         if missing:
             raise ValueError(f"Faltan sensores: {missing}")
         return v
 ```
 
-Si un archivo está mal formado, el error se lanza aquí, no en mitad del cálculo de features.
+Si una grabación está mal formada, el error se lanza aquí, no en mitad del cálculo de features.
 
 **`spec/schemas/feature_vector.py`** — frontera entre extracción y ML:
 
@@ -284,7 +283,7 @@ spec/contracts/processor.py          spec/schemas/sensor_reading.py
         │                                       │
         │  define la interfaz                   │  valida los datos de entrada
         ▼                                       ▼
-src/enose/signal/processor.py  ◄──────  Archivo .txt del sensor
+src/enose/signal/processor.py  ◄──────  Grabación .csv del sensor
   (implementa smooth, normalize,
    extract_features, ...)
         │

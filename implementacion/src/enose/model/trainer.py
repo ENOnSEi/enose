@@ -26,8 +26,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 from enose.config import (
-    DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE,
-    GRID_PARAMS, ML_CONFIG, PCA_CONFIG,
+    DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, FILENAME_COLUMN,
+    GRID_PARAMS, LABEL_COLUMN, ML_CONFIG, NON_FEATURE_COLUMNS, PCA_CONFIG,
 )
 from enose.features.perkey_pca import PerKeyPCA
 from enose.pipeline.dataset import load_dataset, validate_dataset
@@ -35,11 +35,11 @@ from enose.utils import create_output_directory, print_data_summary, setup_loggi
 
 logger = setup_logging(__name__)
 
-# Cada muestra física (vino-lote) se mide varias veces. El nombre de archivo sigue
-# el patrón '{Clase}_Wine{NN}-B{BB}_R{RR}.txt'; el sufijo '_R{RR}' identifica la
-# réplica. Agrupar por todo lo anterior a '_R..' evita que réplicas casi idénticas
-# del mismo vino caigan a la vez en train y test (fuga por grupos).
-REPLICATE_SUFFIX = re.compile(r"_R\d+(?:\.\w+)?$", re.IGNORECASE)
+# Cada grabación (un CSV) es la unidad de grupo: si más adelante se ventanea la
+# fase 'medicion' para generar varias muestras por grabación, todas comparten el
+# nombre del CSV con un sufijo '#wNN'. Quitar ese sufijo agrupa las ventanas de
+# la misma grabación y evita que caigan a la vez en train y test (fuga por grupos).
+WINDOW_SUFFIX = re.compile(r"#w\d+$", re.IGNORECASE)
 
 
 class ModelTrainer:
@@ -53,13 +53,13 @@ class ModelTrainer:
         self.df: Optional[pd.DataFrame] = None
         self.X: Optional[pd.DataFrame] = None
         self.y: Optional[pd.Series] = None
-        self.groups = None            # id de vino-lote por muestra (para split por grupos)
+        self.groups = None            # id de grabación por muestra (para split por grupos)
         self.groups_train = None      # ids de grupo del subconjunto de entrenamiento
         self.X_train = self.X_test = self.y_train = self.y_test = None
         self.pipeline: Optional[Pipeline] = None
         self.grid_search: Optional[GridSearchCV] = None
         self.results: Dict = {}
-        self.n_groups: int = 0           # nº de vinos-lote distintos (para el informe)
+        self.n_groups: int = 0           # nº de grabaciones distintas (para el informe)
         self.split_info: Optional[Dict] = None  # resumen de la división train/test
 
     # ------------------------------------------------------------------
@@ -80,18 +80,17 @@ class ModelTrainer:
 
     def prepare_features(self) -> bool:
         try:
-            exclude = {"Nombre_Archivo", "Ruta_Completa", "Calidad_Vino"}
-            self.X = self.df.drop(columns=[c for c in exclude if c in self.df.columns])
-            self.y = self.df["Calidad_Vino"]
+            self.X = self.df.drop(columns=[c for c in NON_FEATURE_COLUMNS if c in self.df.columns])
+            self.y = self.df[LABEL_COLUMN]
             self.groups = self._derive_groups()
 
             n_groups = pd.Series(self.groups).nunique()
             self.n_groups = int(n_groups)
             logger.info(f"Features: {self.X.shape[1]} | Muestras: {self.X.shape[0]} | "
-                        f"Clases: {self.y.nunique()} | Grupos (vino-lote): {n_groups}")
+                        f"Clases: {self.y.nunique()} | Grupos (grabación): {n_groups}")
             if n_groups < self.X.shape[0]:
-                logger.info("Se usará validación por grupos: ninguna réplica del mismo vino "
-                            "estará a la vez en train y test.")
+                logger.info("Se usará validación por grupos: ninguna ventana de la misma "
+                            "grabación estará a la vez en train y test.")
             return True
         except Exception as e:
             logger.error(f"Error preparando features: {e}")
@@ -99,16 +98,16 @@ class ModelTrainer:
 
     def _derive_groups(self) -> np.ndarray:
         """
-        Id de grupo (vino-lote) por muestra, derivado de 'Nombre_Archivo' quitando
-        el sufijo de réplica '_R{RR}'. Si no hay nombres de archivo, cada muestra es
+        Id de grupo (grabación) por muestra, derivado de 'Nombre_Archivo' quitando
+        el sufijo de ventana '#wNN'. Si no hay nombres de archivo, cada muestra es
         su propio grupo (equivale a un split sin agrupar).
         """
-        if "Nombre_Archivo" not in self.df.columns:
-            logger.warning("Sin columna 'Nombre_Archivo': no se puede agrupar por vino. "
-                           "Cada muestra será su propio grupo (posible fuga por réplicas).")
+        if FILENAME_COLUMN not in self.df.columns:
+            logger.warning(f"Sin columna '{FILENAME_COLUMN}': no se puede agrupar por grabación. "
+                           "Cada muestra será su propio grupo.")
             return np.arange(len(self.df))
-        return self.df["Nombre_Archivo"].apply(
-            lambda name: REPLICATE_SUFFIX.sub("", str(name))
+        return self.df[FILENAME_COLUMN].apply(
+            lambda name: WINDOW_SUFFIX.sub("", str(name))
         ).to_numpy()
 
     def split_data(self, test_size: float = 0.2, random_state: int = 42) -> bool:
@@ -123,7 +122,7 @@ class ModelTrainer:
             n_splits = min(max(round(1 / test_size), 2), int(min_groups_per_class))
             if n_splits < 2:
                 logger.error("Insuficientes grupos por clase para un split por grupos "
-                             "(se requieren ≥2 vinos en la clase más pequeña).")
+                             "(se requieren ≥2 grabaciones en la clase más pequeña).")
                 return False
 
             sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
@@ -142,7 +141,7 @@ class ModelTrainer:
             }
             logger.info(f"Split por grupos ({n_splits} folds -> test ~{100/n_splits:.0f}%): "
                         f"Train {len(self.X_train)} muestras / Test {len(self.X_test)} muestras "
-                        f"({n_test_groups} vinos en test, disjuntos de train)")
+                        f"({n_test_groups} grabaciones en test, disjuntas de train)")
             return True
         except Exception as e:
             logger.error(f"Error dividiendo datos: {e}")
@@ -170,7 +169,7 @@ class ModelTrainer:
     def optimize_hyperparameters(self) -> bool:
         try:
             # La CV también debe respetar los grupos: el nº de folds se limita por los
-            # grupos (vinos) distintos por clase en el train, no por las muestras.
+            # grupos (grabaciones) distintos por clase en el train, no por las muestras.
             groups_per_class = (
                 pd.DataFrame({"y": self.y_train.to_numpy(), "g": self.groups_train})
                 .drop_duplicates("g").groupby("y")["g"].count().min()
@@ -178,7 +177,7 @@ class ModelTrainer:
             n_splits = min(ML_CONFIG.n_splits_cv, int(groups_per_class))
             if n_splits < 2:
                 logger.error("Grupos insuficientes en la clase minoritaria del train para CV "
-                             "(se requieren ≥2 vinos).")
+                             "(se requieren ≥2 grabaciones).")
                 return False
 
             sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
