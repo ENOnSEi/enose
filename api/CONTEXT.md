@@ -8,8 +8,19 @@ El período de reposo en aire limpio previo a la exposición al olor. Su funció
 ### Medicion
 El período de exposición activa al olor objetivo. Comienza cuando el observer detecta que la base se ha estabilizado. El período de recuperación posterior a la exposición no está implementado todavía.
 
+### Sample
+Entidad de nivel superior que representa la medición de una sustancia. Tiene `name` (solo identificación humana, puede repetirse), `n_repetitions` (número de ciclos planificados) y `completed_repetitions` (número de `MeasurementSet` completados con éxito). Si `completed_repetitions < n_repetitions`, el sample fue interrumpido. La decisión de si un sample incompleto es válido para análisis queda en manos del usuario, que compara ambos valores. El análisis y entrenamiento usan el `id` del `Sample`. Se crea al llamar a `/serial/start` con `n_repetitions` entre 1 y 10. Se cierra automáticamente al completar todas las repeticiones. **En el futuro** se añadirán campos adicionales para describir la naturaleza de la muestra (etiqueta de clase, sustancia, condiciones, etc.).
+
 ### MeasurementSet
-Un experimento completo: un único ciclo base→medicion. Se crea al llamar a `/serial/start` y requiere un `name` (string libre, puede repetirse) que sirve únicamente como identificación humana. El análisis y entrenamiento del modelo se hacen usando el `id` del `MeasurementSet`, no el nombre. Tiene `started_at` y `stopped_at`. Cada sustancia que se quiere medir genera un `MeasurementSet` nuevo.
+Un único ciclo base→medicion dentro de un `Sample`. Se crea y gestiona automáticamente por el observer. Tiene `sample_id`, `repetition_number` (1-based) y `started_at`/`stopped_at`.
+
+### Cooldown
+Fase entre dos `MeasurementSet` consecutivos. El sensor se recupera en aire limpio. Las lecturas tienen `estado="cooldown"`, `sample_id` del sample activo, y `measurement_set_id=NULL`. Termina cuando la pendiente de todos los sensores se estabiliza (mismo criterio que base). No hay cooldown después del último MeasurementSet.
+
+### Validez de datos tras crash
+Si la API se reinicia a mitad de un `Sample`, el `Sample` y el `MeasurementSet` activo quedan con `stopped_at = NULL`. No se hace limpieza automática al arrancar. La regla de descarte es:
+- `MeasurementSet.stopped_at = NULL` → siempre descartar (ciclo incompleto).
+- `Sample.stopped_at = NULL` → no descartar automáticamente; usar `completed_repetitions` para decidir si tiene suficientes ciclos válidos para el análisis.
 
 ### Cierre de MeasurementSet
 Al hacer stop (manual o por observer), el `MeasurementSet` no se cierra inmediatamente. Primero se espera a que la queue del drain esté vacía (máx. 10 segundos) para garantizar que todas las lecturas pendientes se insertan con el `measurement_set_id` correcto. Solo entonces se escribe `stopped_at` y se limpia el estado.
@@ -27,4 +38,4 @@ Si la fase de `medicion` no se estabiliza, la medicion no termina nunca. **Pendi
 Si la fase de `base` no se estabiliza en 5 minutos, el observer debe abortar el `MeasurementSet` y notificar al usuario con un error claro. **Pendiente de implementar junto con WebSockets**, que serán el canal de feedback en tiempo real para este tipo de eventos. Mientras tanto no hay timeout: el observer espera indefinidamente.
 
 ### Estado
-Etiqueta de cada `Reading` que indica la fase en que fue capturada: `base` o `medicion`. Lo gestiona el observer automáticamente. Los endpoints `PUT /serial/estado/{estado}` y las opciones equivalentes del CLI existen únicamente para pruebas manuales durante el desarrollo, antes de que el observer esté totalmente calibrado. No deben usarse en producción para alterar mediciones reales.
+Etiqueta de cada `Reading` que indica la fase en que fue capturada: `base`, `medicion` o `cooldown`. Lo gestiona el observer automáticamente. Los endpoints `PUT /serial/estado/{estado}` y las opciones equivalentes del CLI existen únicamente para pruebas manuales durante el desarrollo, antes de que el observer esté totalmente calibrado. No deben usarse en producción para alterar mediciones reales.

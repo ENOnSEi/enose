@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.db.database import AsyncSessionLocal
 from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading
+from app.models.sample import Sample
 from app.services import measurement_state, serial_reader
 from app.services.slope_analyzer import SlopeAnalyzer
 
@@ -16,8 +17,8 @@ class Observer:
     def __init__(
         self,
         sensor_cache: dict[str, int],
-        window: int = 20,
-        threshold: float = 1.0,
+        window: int = 60,
+        threshold: float = 20.0,
         poll_interval: float = 1.0,
         min_medicion_seconds: float = 30.0,
     ):
@@ -28,7 +29,8 @@ class Observer:
         self._window = window
 
     async def run(self) -> None:
-        state = "waiting"
+        state = "start_base"
+        rep = 0
         medicion_start: float | None = None
         was_running = False
 
@@ -37,9 +39,9 @@ class Observer:
 
             running = serial_reader.get_status()["running"]
 
-            # reset al detectar parada
             if was_running and not running:
-                state = "waiting"
+                state = "start_base"
+                rep = 0
                 medicion_start = None
 
             was_running = running
@@ -47,41 +49,127 @@ class Observer:
             if not running:
                 continue
 
-            samples = await self._fetch_window()
-            if len(samples) < 2:
+            n_reps = measurement_state.get_current_sample_n_repetitions()
+            if n_reps == 0:
                 continue
 
-            if state == "waiting":
+            if state == "start_base":
+                rep += 1
+                # rep 1 ya fue creado por el router; para el resto, crear aquí
+                if measurement_state.get_current_ms() is None:
+                    ms = await self._create_ms(rep)
+                    measurement_state.set_current_ms(ms.id)
+                serial_reader.set_estado("base")
+                print(f"[observer] rep {rep}/{n_reps}: base iniciada (ms_id={measurement_state.get_current_ms()})")
+                state = "waiting_base"
+
+            elif state == "waiting_base":
+                samples = await self._fetch_window_by_ms()
                 if self._analyzer.all_stable(samples):
-                    print("[observer] base estable → medicion")
+                    print(f"[observer] rep {rep}/{n_reps}: base estable → medicion")
                     serial_reader.set_estado("medicion")
                     state = "measuring"
                     medicion_start = time.monotonic()
 
             elif state == "measuring" and medicion_start is not None:
                 elapsed = time.monotonic() - medicion_start
-                stable = self._analyzer.all_stable(samples)
-                if elapsed >= self._min_medicion_seconds and stable:
-                    reason = f"{elapsed:.1f}s transcurridos y pendiente estable"
-                    print(f"[observer] medicion completa ({reason}) → stop")
-                    await self._close_measurement_set()
-                    serial_reader.stop()
-                    state = "waiting"
-                    medicion_start = None
+                samples = await self._fetch_window_by_ms()
+                if elapsed >= self._min_medicion_seconds and self._analyzer.all_stable(samples):
+                    print(f"[observer] rep {rep}/{n_reps}: medicion completa ({elapsed:.1f}s)")
+                    await self._close_current_ms()
+                    await self._increment_completed_repetitions()
+                    if rep >= n_reps:
+                        print("[observer] sample completo → stop")
+                        await self._close_sample()
+                        serial_reader.stop()
+                        state = "start_base"
+                        rep = 0
+                    else:
+                        serial_reader.set_estado("cooldown")
+                        state = "cooldown"
 
-    async def _fetch_window(self) -> list[tuple[int, dict[str, int]]]:
-        ms_id = measurement_state.get_current()
+            elif state == "cooldown":
+                samples = await self._fetch_window_cooldown()
+                if self._analyzer.all_stable(samples):
+                    print(f"[observer] cooldown estable → rep {rep + 1}")
+                    state = "start_base"
+
+    async def _create_ms(self, rep: int) -> MeasurementSet:
         async with AsyncSessionLocal() as session:
-            query = (
+            ms = MeasurementSet(
+                sample_id=measurement_state.get_current_sample_id(),
+                repetition_number=rep,
+            )
+            session.add(ms)
+            await session.commit()
+            await session.refresh(ms)
+            return ms
+
+    async def _close_current_ms(self) -> None:
+        for _ in range(20):
+            if serial_reader.get_status()["readings_queued"] == 0:
+                break
+            await asyncio.sleep(0.5)
+        ms_id = measurement_state.get_current_ms()
+        if ms_id is None:
+            return
+        async with AsyncSessionLocal() as session:
+            ms = await session.get(MeasurementSet, ms_id)
+            if ms:
+                ms.stopped_at = datetime.now(timezone.utc)
+                await session.commit()
+        measurement_state.set_current_ms(None)
+
+    async def _increment_completed_repetitions(self) -> None:
+        sample_id = measurement_state.get_current_sample_id()
+        if sample_id is None:
+            return
+        async with AsyncSessionLocal() as session:
+            sample = await session.get(Sample, sample_id)
+            if sample:
+                sample.completed_repetitions += 1
+                await session.commit()
+
+    async def _close_sample(self) -> None:
+        sample_id = measurement_state.get_current_sample_id()
+        if sample_id is None:
+            return
+        async with AsyncSessionLocal() as session:
+            sample = await session.get(Sample, sample_id)
+            if sample:
+                sample.stopped_at = datetime.now(timezone.utc)
+                await session.commit()
+        measurement_state.clear()
+
+    async def _fetch_window_by_ms(self) -> list[tuple[int, dict[str, int]]]:
+        ms_id = measurement_state.get_current_ms()
+        if ms_id is None:
+            return []
+        async with AsyncSessionLocal() as session:
+            rows = list(reversed((await session.scalars(
                 select(Reading)
                 .options(selectinload(Reading.values))
+                .where(Reading.measurement_set_id == ms_id)
                 .order_by(Reading.id.desc())
                 .limit(self._window)
-            )
-            if ms_id is not None:
-                query = query.where(Reading.measurement_set_id == ms_id)
-            rows = list(reversed((await session.scalars(query)).all()))
+            )).all()))
+        return self._to_samples(rows)
 
+    async def _fetch_window_cooldown(self) -> list[tuple[int, dict[str, int]]]:
+        sample_id = measurement_state.get_current_sample_id()
+        if sample_id is None:
+            return []
+        async with AsyncSessionLocal() as session:
+            rows = list(reversed((await session.scalars(
+                select(Reading)
+                .options(selectinload(Reading.values))
+                .where(Reading.sample_id == sample_id, Reading.estado == "cooldown")
+                .order_by(Reading.id.desc())
+                .limit(self._window)
+            )).all()))
+        return self._to_samples(rows)
+
+    def _to_samples(self, rows: list) -> list[tuple[int, dict[str, int]]]:
         result = []
         for r in rows:
             vals = {
@@ -91,20 +179,3 @@ class Observer:
             }
             result.append((r.arduino_ms, vals))
         return result
-
-    async def _close_measurement_set(self) -> None:
-        # esperar a que el drain vacíe la queue antes de cerrar
-        for _ in range(20):
-            if serial_reader.get_status()["readings_queued"] == 0:
-                break
-            await asyncio.sleep(0.5)
-
-        ms_id = measurement_state.get_current()
-        if ms_id is None:
-            return
-        async with AsyncSessionLocal() as session:
-            ms = await session.get(MeasurementSet, ms_id)
-            if ms:
-                ms.stopped_at = datetime.now(timezone.utc)
-                await session.commit()
-        measurement_state.clear()

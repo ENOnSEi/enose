@@ -7,7 +7,6 @@ from sqlalchemy import select
 import app.models  # noqa: F401 — registra modelos en Base.metadata
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal, Base, engine
-from app.models.measurement_set import MeasurementSet  # noqa: F401
 from app.models.reading import Reading, ReadingValue
 from app.models.sensor import Sensor
 from app.routers.serial import router as serial_router
@@ -36,7 +35,8 @@ async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
             async with AsyncSessionLocal() as session:
                 for arduino_ms, values, estado in items:
                     session.add(Reading(
-                        measurement_set_id=measurement_state.get_current(),
+                        sample_id=measurement_state.get_current_sample_id(),
+                        measurement_set_id=measurement_state.get_current_ms(),
                         arduino_ms=arduino_ms,
                         estado=estado,
                         values=[

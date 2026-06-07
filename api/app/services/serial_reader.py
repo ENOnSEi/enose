@@ -32,7 +32,8 @@ def _reader_loop(port: str, baud: int, sensor_names: list[str]) -> None:
 
         try:
             line = ser.readline().decode(errors="ignore").strip()
-        except Exception:
+        except Exception as e:
+            print(f"[serial] readline error: {e}")
             break
 
         if not line:
@@ -57,6 +58,8 @@ def _reader_loop(port: str, baud: int, sensor_names: list[str]) -> None:
             pass
 
     ser.close()
+    with _lock:
+        _running = False
     print("[serial] reader stopped")
 
 
