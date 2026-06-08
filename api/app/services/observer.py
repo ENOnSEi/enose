@@ -10,23 +10,42 @@ from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading
 from app.models.sample import Sample
 from app.services import measurement_state, serial_reader
-from app.services.slope_analyzer import SlopeAnalyzer
+from app.services.analyzer import Policy, SignalAnalyzer
 
 
 class Observer:
+    """Orquesta el ciclo de un Sample: N repeticiones de base → medicion → cooldown.
+
+    Lee lotes de lecturas de Postgres, se los pasa al :class:`SignalAnalyzer` y
+    actúa sobre la placa SOLO cuando el analizador confirma la estabilización.
+    No calcula pendientes: esa responsabilidad es del analizador.
+    """
+
     def __init__(
         self,
         sensor_cache: dict[str, int],
-        window: int = 60,
-        threshold: float = 20.0,
+        window_seconds: float = 4.0,
+        slope_threshold: float = 7.5,
+        hysteresis: float = 0.15,
+        confirm_seconds: float = 1.0,
+        policy: Policy = Policy.ALL,
+        fetch_limit: int = 300,
         poll_interval: float = 1.0,
         min_medicion_seconds: float = 30.0,
     ):
         self._sensor_id_to_name = {v: k for k, v in sensor_cache.items()}
-        self._analyzer = SlopeAnalyzer(window=window, threshold=threshold)
+        self._analyzer = SignalAnalyzer(
+            window_seconds=window_seconds,
+            slope_threshold=slope_threshold,
+            hysteresis=hysteresis,
+            confirm_seconds=confirm_seconds,
+            policy=policy,
+        )
         self._poll_interval = poll_interval
         self._min_medicion_seconds = min_medicion_seconds
-        self._window = window
+        self._fetch_limit = fetch_limit
+        # arranca en fase base: señal plana, sin exigir subida previa
+        self._analyzer.reset(require_rise=False)
 
     async def run(self) -> None:
         state = "start_base"
@@ -43,6 +62,7 @@ class Observer:
                 state = "start_base"
                 rep = 0
                 medicion_start = None
+                self._analyzer.reset(require_rise=False)
 
             was_running = running
 
@@ -60,21 +80,29 @@ class Observer:
                     ms = await self._create_ms(rep)
                     measurement_state.set_current_ms(ms.id)
                 serial_reader.set_estado("base")
+                # base: señal plana, no se exige subida previa
+                self._analyzer.reset(require_rise=False)
                 print(f"[observer] rep {rep}/{n_reps}: base iniciada (ms_id={measurement_state.get_current_ms()})")
                 state = "waiting_base"
 
             elif state == "waiting_base":
                 samples = await self._fetch_window_by_ms()
-                if self._analyzer.all_stable(samples):
+                result = self._analyzer.update(samples)
+                self._log(state, result)
+                if result.stable:
                     print(f"[observer] rep {rep}/{n_reps}: base estable → medicion")
                     serial_reader.set_estado("medicion")
+                    # medición: exigir subida antes de estabilizar
+                    self._analyzer.reset(require_rise=True)
                     state = "measuring"
                     medicion_start = time.monotonic()
 
             elif state == "measuring" and medicion_start is not None:
                 elapsed = time.monotonic() - medicion_start
                 samples = await self._fetch_window_by_ms()
-                if elapsed >= self._min_medicion_seconds and self._analyzer.all_stable(samples):
+                result = self._analyzer.update(samples)
+                self._log(state, result)
+                if elapsed >= self._min_medicion_seconds and result.stable:
                     print(f"[observer] rep {rep}/{n_reps}: medicion completa ({elapsed:.1f}s)")
                     await self._close_current_ms()
                     await self._increment_completed_repetitions()
@@ -84,15 +112,32 @@ class Observer:
                         serial_reader.stop()
                         state = "start_base"
                         rep = 0
+                        medicion_start = None
+                        self._analyzer.reset(require_rise=False)
                     else:
                         serial_reader.set_estado("cooldown")
+                        # cooldown: la señal cae y se aplana; la caída satisface
+                        # el latch (|pendiente| alta), require_rise=True evita
+                        # confirmar estable en el pico inicial
+                        self._analyzer.reset(require_rise=True)
                         state = "cooldown"
 
             elif state == "cooldown":
                 samples = await self._fetch_window_cooldown()
-                if self._analyzer.all_stable(samples):
+                result = self._analyzer.update(samples)
+                self._log(state, result)
+                if result.stable:
                     print(f"[observer] cooldown estable → rep {rep + 1}")
                     state = "start_base"
+
+    def _log(self, state: str, result) -> None:
+        """Traza pendiente y estado por canal para calibrar los umbrales."""
+        channels = " ".join(
+            f"{name}={r.slope:+.1f}/{r.state.value[:4]}" if r.slope is not None
+            else f"{name}=--"
+            for name, r in result.channels.items()
+        )
+        print(f"[observer] {state:11} stable={result.stable} | {channels}")
 
     async def _create_ms(self, rep: int) -> MeasurementSet:
         async with AsyncSessionLocal() as session:
@@ -151,7 +196,7 @@ class Observer:
                 .options(selectinload(Reading.values))
                 .where(Reading.measurement_set_id == ms_id)
                 .order_by(Reading.id.desc())
-                .limit(self._window)
+                .limit(self._fetch_limit)
             )).all()))
         return self._to_samples(rows)
 
@@ -165,7 +210,7 @@ class Observer:
                 .options(selectinload(Reading.values))
                 .where(Reading.sample_id == sample_id, Reading.estado == "cooldown")
                 .order_by(Reading.id.desc())
-                .limit(self._window)
+                .limit(self._fetch_limit)
             )).all()))
         return self._to_samples(rows)
 

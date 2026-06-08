@@ -106,7 +106,7 @@ PostgreSQL
     │ SELECT últimas N lecturas
     ▼
 Observer (async task, poll cada 1s)
-    │ SlopeAnalyzer.all_stable()
+    │ SignalAnalyzer.update() → transición confirmada
     ▼
 serial_reader.set_estado() / .stop()
 ```
@@ -139,14 +139,72 @@ POST /serial/start
   También: POST /serial/stop (parada manual)
 ```
 
+### Analizador de señal (`SignalAnalyzer`)
+
+El analizador ([app/services/analyzer.py](app/services/analyzer.py)) decide, por cada sensor de
+forma independiente, si la señal está **subiendo** o **estabilizada**. El Observer no calcula
+nada: solo le pasa muestras y actúa cuando el analizador **confirma una transición**.
+
+Cuatro mecanismos para que la decisión sea fiable con sensores TGS (ruidosos y con deriva):
+
+1. **Regresión sobre ventana deslizante** — la pendiente se ajusta por mínimos cuadrados sobre
+   todos los puntos de los últimos `OBSERVER_WINDOW_SECONDS`, no restando dos puntos. Un pico
+   aislado apenas la mueve.
+2. **Estabilidad numérica** — el tiempo de cada ventana se refiere a su primer punto (`t − t0`)
+   y se trabaja en segundos, evitando restar `millis()` grandes casi iguales.
+3. **Histéresis (banda muerta)** — dos umbrales en vez de uno: se confirma `ESTABILIZADO` cuando
+   `|pendiente| < lower` y se vuelve a `SUBIENDO` cuando `|pendiente| > upper`, con
+   `lower = umbral·(1−hyst)` y `upper = umbral·(1+hyst)`. Dentro de la banda no se cambia de
+   estado, lo que evita el *chattering*. Se mide la **magnitud** de la pendiente y el umbral es
+   un valor pequeño positivo, de modo que la señal plana (pendiente ≈ 0) cae por debajo de
+   `lower` y la estabilización sí se confirma.
+4. **Debounce temporal** — la condición debe sostenerse `OBSERVER_CONFIRM_SECONDS` (medidos con
+   el tiempo de la propia señal) antes de dar el cambio por bueno. Un cruce puntual no dispara.
+5. **Latch "primero sube, luego se estabiliza"** (`require_rise`) — en medición la señal arranca
+   plana (el olor aún no ha llegado al sensor), lo que el analizador confundiría con "ya
+   estabilizado" y dispararía un `stop` prematuro. Un canal solo puede confirmar `ESTABILIZADO`
+   si antes ha llegado a subir de verdad (`|pendiente| > upper`). En la fase de base no aplica:
+   la línea base es plana y solo debe asentarse.
+
+El estado de cada canal se mantiene entre polls; el Observer llama a `reset()` al parar y al
+pasar de base a medicion, para re-detectar la estabilización desde cero en la nueva fase
+(con `require_rise=False` en base y `True` en medicion).
+
+La **política multi-sensor** (`OBSERVER_POLICY`) combina los canales: `all` (todos estables,
+por defecto), `any` (cualquiera) o `majority` (la mayoría).
+
+Tests del analizador (no requieren BD ni placa):
+
+```bash
+uv run python tests/test_analyzer.py
+```
+
+**Calibración del umbral** — [tools/calibrate.py](tools/calibrate.py) pasa los CSV reales de
+`datasets/` por el analizador (offline, sin placa) y muestra, por sensor, el pico de subida vs.
+la pendiente de meseta, más a qué segundo dispararía el `stop` para varios umbrales:
+
+```bash
+python tools/calibrate.py
+```
+
+El default `OBSERVER_SLOPE_THRESHOLD=7.5` sale de ahí: el rango factible con política `all` es
+~6.2–8.4 u/s (por encima de la meseta más alta ≈5.3 u/s y por debajo del pico del sensor que
+responde más flojo ≈9.7 u/s). Un umbral más alto deja a ese sensor sin "subir" y la medición no
+estabiliza nunca. **Reejecuta la calibración cuando recojas más grabaciones.**
+
 ### Parámetros del observer (configurables en `.env`)
 
 | Variable                        | Default | Descripción                                      |
 |---------------------------------|---------|--------------------------------------------------|
-| `OBSERVER_WINDOW`               | 60      | Lecturas usadas para calcular la pendiente (15s a 4 Hz) |
-| `OBSERVER_SLOPE_THRESHOLD`      | 20.0    | Umbral de pendiente (unidades/segundo) para "estable". Escala ADC 0-1023, equivale a ~2% de escala/segundo |
+| `OBSERVER_WINDOW_SECONDS`       | 4.0     | Ventana temporal (segundos) de la regresión de pendiente. La dinámica de los TGS es de segundos |
+| `OBSERVER_SLOPE_THRESHOLD`      | 7.5     | Umbral central de pendiente (u/s), pequeño positivo. Calibrado con `datasets/` (rango factible ~6.2–8.4) |
+| `OBSERVER_HYSTERESIS`           | 0.15    | Ancho de la banda muerta como fracción del umbral (0.15 → ±15 %) |
+| `OBSERVER_CONFIRM_SECONDS`      | 1.0     | Debounce: tiempo que la condición debe sostenerse antes de confirmar |
+| `OBSERVER_POLICY`               | all     | Política multi-sensor: `all` / `any` / `majority` |
+| `OBSERVER_FETCH_LIMIT`          | 300     | Nº de lecturas recientes que se traen de la BD para cubrir la ventana |
 | `OBSERVER_POLL_INTERVAL`        | 1.0     | Segundos entre cada comprobación del observer    |
-| `OBSERVER_MIN_MEDICION_SECONDS` | 30.0    | Tiempo mínimo en medicion. El stop requiere que se cumplan AMBAS condiciones: mínimo transcurrido Y pendiente estable |
+| `OBSERVER_MIN_MEDICION_SECONDS` | 30.0    | Tiempo mínimo en medicion. El stop requiere AMBAS: mínimo transcurrido Y pendiente estable |
 
-`OBSERVER_SLOPE_THRESHOLD` necesitará calibración con datos reales una vez se hayan recogido
-las primeras sesiones.
+`OBSERVER_SLOPE_THRESHOLD`, `OBSERVER_HYSTERESIS` y `OBSERVER_CONFIRM_SECONDS` necesitarán
+calibración con datos reales. El log del observer traza pendiente y estado por canal en cada
+poll para facilitarlo (`[observer] waiting   stable=False | tgs2620=+45.2/subi ...`).

@@ -11,6 +11,7 @@ from app.models.reading import Reading, ReadingValue
 from app.models.sensor import Sensor
 from app.routers.serial import router as serial_router
 from app.services import measurement_state, serial_reader
+from app.services.analyzer import Policy
 from app.services.observer import Observer
 
 
@@ -61,8 +62,12 @@ async def lifespan(app: FastAPI):
     observer_task = asyncio.create_task(
         Observer(
             sensor_cache=sensor_cache,
-            window=settings.OBSERVER_WINDOW,
-            threshold=settings.OBSERVER_SLOPE_THRESHOLD,
+            window_seconds=settings.OBSERVER_WINDOW_SECONDS,
+            slope_threshold=settings.OBSERVER_SLOPE_THRESHOLD,
+            hysteresis=settings.OBSERVER_HYSTERESIS,
+            confirm_seconds=settings.OBSERVER_CONFIRM_SECONDS,
+            policy=Policy(settings.OBSERVER_POLICY),
+            fetch_limit=settings.OBSERVER_FETCH_LIMIT,
             poll_interval=settings.OBSERVER_POLL_INTERVAL,
             min_medicion_seconds=settings.OBSERVER_MIN_MEDICION_SECONDS,
         ).run()
