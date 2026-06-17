@@ -29,7 +29,7 @@ def menu():
 def main():
     global running
 
-    ser = serial.Serial("COM9", 9600, timeout=1)
+    ser = serial.Serial("/dev/ttyACM0", 9600, timeout=1)
 
     with open("data1.csv", "w") as f:
         # cabecera CSV
