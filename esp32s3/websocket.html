@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+    <body>
+        <h3>ESP32 ADC WebSocket</h3>
+        <div id="val">-</div>
+
+        <script>
+            const ws = new WebSocket("ws://192.168.1.237:81");
+
+            ws.onmessage = (event) => {
+                document.getElementById("val").innerText = event.data;
+            };
+        </script>
+    </body>
+</html>
