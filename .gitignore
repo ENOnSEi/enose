@@ -221,3 +221,6 @@ __marimo__/
 .claude/settings.local.json
 .agents/
 .claude/
+
+# Arduino — credenciales locales
+esp32s3/secrets.h

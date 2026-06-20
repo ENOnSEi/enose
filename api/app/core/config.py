@@ -7,9 +7,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/enose_db"
     APP_NAME: str = "ENose API"
     DEBUG: bool = False
-    SERIAL_PORT: str = "/dev/ttyACM0"
-    SERIAL_BAUD: int = 9600
-    ESP32_WS_URL: str = "ws://192.168.1.237:81"
+    ESP32_WS_URL: str = "ws://192.168.1.135:81"
     # Orden debe coincidir con el orden de valores que envía el Arduino
     SENSOR_NAMES: list[str] = ["tgs2620", "tgs2611", "tgs2602", "tgs2600"]
     SENSOR_PINS: list[str] = ["PIN_TGS2620", "PIN_TGS2611", "PIN_TGS2602", "PIN_TGS2600"]

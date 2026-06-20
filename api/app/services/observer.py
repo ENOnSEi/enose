@@ -116,10 +116,7 @@ class Observer:
                         self._analyzer.reset(require_rise=False)
                     else:
                         board_ws.set_estado("cooldown")
-                        # cooldown: la señal cae y se aplana; la caída satisface
-                        # el latch (|pendiente| alta), require_rise=True evita
-                        # confirmar estable en el pico inicial
-                        self._analyzer.reset(require_rise=True)
+                        self._analyzer.reset(require_rise=False)
                         state = "cooldown"
 
             elif state == "cooldown":
@@ -137,7 +134,14 @@ class Observer:
             else f"{name}=--"
             for name, r in result.channels.items()
         )
-        print(f"[observer] {state:11} stable={result.stable} | {channels}")
+        if state == "measuring":
+            risen = " | risen=" + "".join(
+                name[3:] + ("✓" if r.has_risen else "✗")
+                for name, r in result.channels.items()
+            )
+        else:
+            risen = ""
+        print(f"[observer] {state:11} stable={result.stable} | {channels}{risen}")
 
     async def _create_ms(self, rep: int) -> MeasurementSet:
         async with AsyncSessionLocal() as session:

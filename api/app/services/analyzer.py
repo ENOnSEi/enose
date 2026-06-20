@@ -62,6 +62,7 @@ class ChannelResult:
 
     slope: float | None  # pendiente en unidades/segundo; None si faltan datos
     state: ChannelState
+    has_risen: bool = False
 
 
 @dataclass
@@ -233,7 +234,7 @@ class SignalAnalyzer:
                     slope, now, self.lower, self.upper,
                     self.confirm_seconds, self.require_rise,
                 )
-            results[name] = ChannelResult(slope=slope, state=fsm.state)
+            results[name] = ChannelResult(slope=slope, state=fsm.state, has_risen=fsm._has_risen)
 
         stable = self._combine([r.state for r in results.values()])
         new_combined = ChannelState.ESTABILIZADO if stable else ChannelState.SUBIENDO

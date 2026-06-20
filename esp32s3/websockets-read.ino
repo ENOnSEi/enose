@@ -1,8 +1,9 @@
 #include <WiFi.h>
 #include <WebSocketsServer.h>
+#include "secrets.h"
 
-const char* ssid = "DIGIFIBRA-stQx";
-const char* password = "PsYcFK7c5NfQ";
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 const int medicionRelayPin = 14;
 const int idleRelayPin = 13;
