@@ -10,7 +10,7 @@ from app.db.database import AsyncSessionLocal, Base, engine
 from app.models.reading import Reading, ReadingValue
 from app.models.sensor import Sensor
 from app.routers.serial import router as serial_router
-from app.services import measurement_state, serial_reader
+from app.services import board_ws, measurement_state
 from app.services.analyzer import Policy
 from app.services.observer import Observer
 
@@ -29,7 +29,7 @@ async def _seed_sensors() -> dict[str, int]:
 async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
     while True:
         await asyncio.sleep(0.5)
-        items = serial_reader.drain()
+        items = board_ws.drain()
         if not items:
             continue
         try:
@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    serial_reader.stop()
+    board_ws.stop()
     drain_task.cancel()
     observer_task.cancel()
     await engine.dispose()

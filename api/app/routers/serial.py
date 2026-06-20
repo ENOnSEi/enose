@@ -8,7 +8,7 @@ from app.db.database import AsyncSessionLocal, get_db
 from app.models.measurement_set import MeasurementSet
 from app.models.sample import Sample
 from app.schemas.reading import SerialStatus
-from app.services import measurement_state, serial_reader
+from app.services import board_ws, measurement_state
 
 router = APIRouter(prefix="/serial", tags=["serial"])
 
@@ -17,14 +17,14 @@ EstadoType = Literal["base", "medicion", "cooldown"]
 
 @router.get("/status", response_model=SerialStatus)
 async def status():
-    return serial_reader.get_status()
+    return board_ws.get_status()
 
 
 @router.post("/start")
 async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: AsyncSession = Depends(get_db)):
     from app.core.config import settings
 
-    started = serial_reader.start(settings.SERIAL_PORT, settings.SERIAL_BAUD, settings.SENSOR_NAMES)
+    started = board_ws.start(settings.ESP32_WS_URL, settings.SENSOR_NAMES)
     if not started:
         raise HTTPException(400, "Already running")
 
@@ -44,7 +44,7 @@ async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: Asy
 
 async def _flush_and_close() -> None:
     for _ in range(20):
-        if serial_reader.get_status()["readings_queued"] == 0:
+        if board_ws.get_status()["readings_queued"] == 0:
             break
         await asyncio.sleep(0.5)
 
@@ -71,12 +71,12 @@ async def _flush_and_close() -> None:
 
 @router.post("/stop")
 async def stop():
-    serial_reader.stop()
+    board_ws.stop()
     asyncio.create_task(_flush_and_close())
     return {"stopped": True}
 
 
 @router.put("/estado/{estado}")
 async def set_estado(estado: EstadoType):
-    serial_reader.set_estado(estado)
+    board_ws.set_estado(estado)
     return {"estado": estado}

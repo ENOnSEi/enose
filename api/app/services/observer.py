@@ -9,7 +9,7 @@ from app.db.database import AsyncSessionLocal
 from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading
 from app.models.sample import Sample
-from app.services import measurement_state, serial_reader
+from app.services import board_ws, measurement_state
 from app.services.analyzer import Policy, SignalAnalyzer
 
 
@@ -56,7 +56,7 @@ class Observer:
         while True:
             await asyncio.sleep(self._poll_interval)
 
-            running = serial_reader.get_status()["running"]
+            running = board_ws.get_status()["running"]
 
             if was_running and not running:
                 state = "start_base"
@@ -79,7 +79,7 @@ class Observer:
                 if measurement_state.get_current_ms() is None:
                     ms = await self._create_ms(rep)
                     measurement_state.set_current_ms(ms.id)
-                serial_reader.set_estado("base")
+                board_ws.set_estado("base")
                 # base: señal plana, no se exige subida previa
                 self._analyzer.reset(require_rise=False)
                 print(f"[observer] rep {rep}/{n_reps}: base iniciada (ms_id={measurement_state.get_current_ms()})")
@@ -91,7 +91,7 @@ class Observer:
                 self._log(state, result)
                 if result.stable:
                     print(f"[observer] rep {rep}/{n_reps}: base estable → medicion")
-                    serial_reader.set_estado("medicion")
+                    board_ws.set_estado("medicion")
                     # medición: exigir subida antes de estabilizar
                     self._analyzer.reset(require_rise=True)
                     state = "measuring"
@@ -109,13 +109,13 @@ class Observer:
                     if rep >= n_reps:
                         print("[observer] sample completo → stop")
                         await self._close_sample()
-                        serial_reader.stop()
+                        board_ws.stop()
                         state = "start_base"
                         rep = 0
                         medicion_start = None
                         self._analyzer.reset(require_rise=False)
                     else:
-                        serial_reader.set_estado("cooldown")
+                        board_ws.set_estado("cooldown")
                         # cooldown: la señal cae y se aplana; la caída satisface
                         # el latch (|pendiente| alta), require_rise=True evita
                         # confirmar estable en el pico inicial
@@ -152,7 +152,7 @@ class Observer:
 
     async def _close_current_ms(self) -> None:
         for _ in range(20):
-            if serial_reader.get_status()["readings_queued"] == 0:
+            if board_ws.get_status()["readings_queued"] == 0:
                 break
             await asyncio.sleep(0.5)
         ms_id = measurement_state.get_current_ms()

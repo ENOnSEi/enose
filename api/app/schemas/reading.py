@@ -18,6 +18,9 @@ class SensorReadingOut(BaseModel):
 
 class SerialStatus(BaseModel):
     running: bool
+    connected: bool
     estado: str
     readings_queued: int
     readings_total: int
+    last_error: str | None
+    board_url: str | None

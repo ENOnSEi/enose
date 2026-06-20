@@ -5,7 +5,7 @@
         <div id="val">-</div>
 
         <script>
-            const ws = new WebSocket("ws://192.168.1.237:81");
+            const ws = new WebSocket("ws://192.168.1.135:81/"); // Replace with your ESP32 IP address and port
 
             ws.onmessage = (event) => {
                 document.getElementById("val").innerText = event.data;
