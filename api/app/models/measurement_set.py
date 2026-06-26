@@ -1,19 +1,28 @@
 from datetime import datetime, timezone
+from sqlalchemy import DateTime
+from sqlalchemy import Column
+from sqlmodel import Field, SQLModel
+from sqlmodel import Relationship
 
-from sqlalchemy import DateTime, ForeignKey, Integer
-from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.database import Base
+class MeasurementSet(SQLModel, table=True):
 
+    id: int | None = Field(default=None, primary_key=True)
 
-class MeasurementSet(Base):
-    __tablename__ = "measurement_sets"
+    sample_id: int = Field(foreign_key="sample.id")
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sample_id: Mapped[int] = mapped_column(ForeignKey("samples.id"))
-    repetition_number: Mapped[int] = mapped_column(Integer)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+    sample: "Sample" = Relationship(back_populates="measurement_sets")
+
+    repetition_number: int
+
+    started_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
-    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    stopped_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+

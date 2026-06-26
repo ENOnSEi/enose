@@ -4,7 +4,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import AsyncSessionLocal, get_db
+
+from app.db.database import AsyncSessionLocal, get_session
 from app.models.measurement_set import MeasurementSet
 from app.models.sample import Sample
 from app.schemas.reading import SerialStatus
@@ -21,7 +22,7 @@ async def status():
 
 
 @router.post("/start")
-async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: AsyncSession = Depends(get_db)):
+async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: AsyncSession = Depends(get_session)):
     from app.core.config import settings
 
     started = board_ws.start(settings.ESP32_WS_URL, settings.SENSOR_NAMES)

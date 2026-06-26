@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     ESP32_WS_URL: str = "ws://192.168.1.135:81"
     # Orden debe coincidir con el orden de valores que envía el Arduino
     SENSOR_NAMES: list[str] = ["tgs2620", "tgs2611", "tgs2602", "tgs2600"]
-    SENSOR_PINS: list[str] = ["PIN_TGS2620", "PIN_TGS2611", "PIN_TGS2602", "PIN_TGS2600"]
+    SENSOR_PINS: list[str] = ["1", "2", "3", "4"]
     # Ventana de regresión en segundos (la dinámica de los TGS es de segundos)
     OBSERVER_WINDOW_SECONDS: float = 4.0
     # Umbral central de pendiente (u/s), pequeño positivo. Calibrado con datasets/

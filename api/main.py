@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import select
 
-import app.models  # noqa: F401 — registra modelos en Base.metadata
+import app.models  
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal, Base, engine
 from app.models.reading import Reading, ReadingValue
@@ -13,6 +13,7 @@ from app.routers.serial import router as serial_router
 from app.services import board_ws, measurement_state
 from app.services.analyzer import Policy
 from app.services.observer import Observer
+from app.db.database import create_db_and_tables
 
 
 async def _seed_sensors() -> dict[str, int]:
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    await create_db_and_tables(engine)
+
     sensor_cache = await _seed_sensors()
 
     drain_task = asyncio.create_task(_drain_to_db(sensor_cache))
@@ -88,3 +91,5 @@ app.include_router(serial_router)
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+

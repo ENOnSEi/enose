@@ -1,20 +1,30 @@
 from datetime import datetime, timezone
-
-from sqlalchemy import DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.db.database import Base
+from sqlalchemy import Column, DateTime
+from sqlmodel import Field, Relationship, SQLModel
 
 
-class Sample(Base):
-    __tablename__ = "samples"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(200))
-    n_repetitions: Mapped[int] = mapped_column(Integer)
-    completed_repetitions: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+class Sample(SQLModel, table=True):
+
+    id: int | None = Field(default=None, primary_key=True)
+
+    name: str = Field(max_length=200)
+
+    n_repetitions: int
+
+    completed_repetitions: int = Field(default=0)
+
+    started_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
-    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    stopped_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    measurement_sets: list["MeasurementSet"] = Relationship(back_populates="sample")
+
+    readings: list["Reading"] = Relationship(
+        back_populates="sample"
+    )

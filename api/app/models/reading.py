@@ -1,29 +1,55 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, Column, DateTime
+from sqlmodel import Field, Relationship, SQLModel
+from app.models.measurement_set import MeasurementSet
+from app.models.sample import Sample
 
-from app.db.database import Base
 
+class Reading(SQLModel, table=True):
 
-class Reading(Base):
-    __tablename__ = "readings"
+    id: int | None = Field(default=None, primary_key=True)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sample_id: Mapped[int | None] = mapped_column(ForeignKey("samples.id"), nullable=True)
-    measurement_set_id: Mapped[int | None] = mapped_column(ForeignKey("measurement_sets.id"), nullable=True)
-    arduino_ms: Mapped[int] = mapped_column(BigInteger)
-    estado: Mapped[str] = mapped_column(String(20))
-    captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+    sample_id: int | None = Field(
+        default=None,
+        foreign_key="sample.id",
     )
-    values: Mapped[list["ReadingValue"]] = relationship(cascade="all, delete-orphan")
+
+    sample: "Sample" = Relationship(back_populates="readings")
+
+    measurement_set_id: int | None = Field(
+        default=None,
+        foreign_key="measurementset.id",
+    )
+
+    arduino_ms: int = Field(
+        sa_column=Column(BigInteger, nullable=False)
+    )
+
+    estado: str = Field(max_length=20)
+
+    captured_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+    values: list["ReadingValue"] = Relationship(
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+        }
+    )
 
 
-class ReadingValue(Base):
-    __tablename__ = "reading_values"
+class ReadingValue(SQLModel, table=True):
 
-    reading_id: Mapped[int] = mapped_column(ForeignKey("readings.id"), primary_key=True)
-    sensor_id: Mapped[int] = mapped_column(ForeignKey("sensors.id"), primary_key=True)
-    value: Mapped[int] = mapped_column(Integer)
+    reading_id: int = Field(
+        foreign_key="reading.id",
+        primary_key=True,
+    )
+
+    sensor_id: int = Field(
+        foreign_key="sensor.id",
+        primary_key=True,
+    )
+
+    value: int
