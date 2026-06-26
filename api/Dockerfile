@@ -37,4 +37,4 @@ USER app
 
 EXPOSE 80
 
-CMD ["fastapi", "run", "src/main.py", "--port", "80", "--proxy-headers"]
+CMD ["fastapi", "run", "main.py", "--port", "80", "--proxy-headers"]
