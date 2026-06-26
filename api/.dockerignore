@@ -1,0 +1,23 @@
+# Local virtual environment (the image builds its own in the builder stage)
+.venv/
+
+# Local Python interpreter pin (image uses the base image's Python)
+.python-version
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Version control and environment files
+.git/
+.gitignore
+.env
+
+# Docker / compose files
+Dockerfile
+compose.yml
+.dockerignore
