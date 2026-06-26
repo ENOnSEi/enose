@@ -35,6 +35,6 @@ COPY --from=builder --chown=app:app /app /app
 
 USER app
 
-EXPOSE 80
+EXPOSE 8000
 
-CMD ["fastapi", "run", "main.py", "--port", "80", "--proxy-headers"]
+CMD ["fastapi", "run", "main.py", "--port", "8000", "--proxy-headers"]
