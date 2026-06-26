@@ -28,8 +28,12 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
 
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-COPY --from=builder --chown=user:user /app /app
+COPY --from=builder --chown=app:app /app /app
+
+USER app
 
 EXPOSE 80
 
