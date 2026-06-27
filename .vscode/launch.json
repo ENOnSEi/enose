@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FastAPI: debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--port", "8000"],
+      "jinja2": true,
+      "justMyCode": true,
+      "cwd": "${workspaceFolder}/api",
+      "python": "${workspaceFolder}/api/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/api"
+      }
+    },
+    {
+      "name": "FastAPI: reload (sin breakpoints)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["main:app", "--reload", "--port", "8000"],
+      "jinja2": true,
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}/api",
+      "python": "${workspaceFolder}/api/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/api"
+      }
+    }
+  ]
+}

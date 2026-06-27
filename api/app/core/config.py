@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    DATABASE_URL: str = "postgresql+asyncpg://user:password@localhost:5432/enose_db"
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_U2aFuczki6MP@ep-patient-boat-abeyr0xp-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
     APP_NAME: str = "ENose API"
     DEBUG: bool = False
     ESP32_WS_URL: str = "ws://192.168.1.135:81"
