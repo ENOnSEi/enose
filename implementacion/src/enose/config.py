@@ -84,6 +84,13 @@ SENSOR_COLUMNS: Dict[str, object] = {
     "sensors": list(SENSOR_MODELS.keys()),   # ['v20', 'v11', 'v02', 'v00']
 }
 
+SENSOR_RATIO_PAIRS: List[Tuple[str, str]] = [
+    ("v20", "v11"),   # alcoholes/solventes vs metano
+    ("v00", "v02"),   # contaminantes generales vs VOCs
+    ("v20", "v02"),   # etanol vs VOCs
+    ("v11", "v00"),   # metano vs contaminantes
+]
+
 # Etiqueta de clase por nombre de fichero (sin extensión, en minúsculas).
 # El valor describe la mezcla. Para una grabación cuyo nombre no esté aquí, se
 # usa el propio nombre del fichero como etiqueta (ver io.reader.extract_substance_label).
@@ -175,6 +182,15 @@ class PlotConfig:
 #                 pipeline/dataset.py).
 FEATURE_MODE: Literal["handcrafted", "pca_signal"] = "handcrafted"
 
+# Clasificador activo en el pipeline de la Fase 5. El paso del Pipeline se llama
+# siempre 'clf', así que las rejillas usan el prefijo 'clf__'.
+#   'lda' : LinearDiscriminantAnalysis con shrinkage — ganador del harness
+#           (compare_models.py) con los datos actuales. Clásico de e-nose/quimiometría
+#           para pocas muestras y features colineales.
+#   'svm' : SVC (linear/rbf), el modelo anterior.
+# Para comparar todos y elegir, usar compare_models.py.
+CLASSIFIER: Literal["lda", "svm"] = "lda"
+
 SIGNAL_CONFIG = SignalConfig()
 PCA_CONFIG = PCAConfig()
 DATA_SPLIT_CONFIG = DataSplitConfig()
@@ -182,21 +198,19 @@ ML_CONFIG = MLConfig()
 LOGGING_CONFIG = LoggingConfig()
 PLOT_CONFIG = PlotConfig()
 
-# Grid search para SVM
-GRID_PARAMS = [
-    {"svm__kernel": ["linear"], "svm__C": [0.1, 1, 10, 100]},
-    {"svm__kernel": ["rbf"], "svm__C": [0.1, 1, 10, 100], "svm__gamma": ["scale", "auto", 0.1, 0.01]},
-]
+# Rejillas de hiperparámetros por clasificador (prefijo 'clf__' = paso del Pipeline).
+GRID_PARAMS_BY_CLASSIFIER: Dict[str, list] = {
+    "lda": [
+        {"clf__shrinkage": ["auto", 0.1, 0.3, 0.5, 0.7, 0.9]},
+    ],
+    "svm": [
+        {"clf__kernel": ["linear"], "clf__C": [0.1, 1, 10, 100]},
+        {"clf__kernel": ["rbf"], "clf__C": [0.1, 1, 10, 100], "clf__gamma": ["scale", "auto", 0.1, 0.01]},
+    ],
+}
 
-GRID_PARAMS_REDUCED = [
-    {"svm__kernel": ["linear"], "svm__C": [1, 10]},
-    {"svm__kernel": ["rbf"], "svm__C": [1, 10], "svm__gamma": ["scale", "auto"]},
-]
-
-GRID_PARAMS_EXTENDED = [
-    {"svm__kernel": ["linear"], "svm__C": [0.01, 0.1, 1, 10, 100, 1000]},
-    {"svm__kernel": ["rbf"], "svm__C": [0.01, 0.1, 1, 10, 100, 1000], "svm__gamma": ["scale", "auto", 0.001, 0.01, 0.1, 1]},
-]
+# Rejilla activa (la que consume el ModelTrainer).
+GRID_PARAMS = GRID_PARAMS_BY_CLASSIFIER[CLASSIFIER]
 
 
 if __name__ == "__main__":

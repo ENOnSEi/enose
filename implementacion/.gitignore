@@ -43,9 +43,10 @@ htmlcov/
 coverage.xml
 
 # ===========================================================================
-# Artefactos generados por el pipeline (todo datos/procesados/)
+# Artefactos generados por el pipeline (modelo, dataset, gráficas)
 # ===========================================================================
 datos/procesados/
+datos/visualizations/
 
 # ===========================================================================
 # Logs
