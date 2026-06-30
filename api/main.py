@@ -12,6 +12,7 @@ from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading, ReadingValue
 from app.models.sample import Sample
 from app.models.sensor import Sensor
+from app.routers.export import router as export_router
 from app.routers.measurement_sets import router as measurement_sets_router
 from app.routers.serial import router as serial_router
 from app.services import board_ws, measurement_state
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
 app.include_router(serial_router)
 app.include_router(measurement_sets_router)
+app.include_router(export_router)
 
 
 @app.get("/health")
