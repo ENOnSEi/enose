@@ -22,7 +22,12 @@ async def status():
 
 
 @router.post("/start")
-async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: AsyncSession = Depends(get_session)):
+async def start(
+    name: str,
+    n_repetitions: int = Query(ge=1, le=10),
+    min_medicion_seconds: float = Query(default=30.0, gt=0, description="Duración mínima de la fase de medición en segundos"),
+    session: AsyncSession = Depends(get_session),
+):
     from app.core.config import settings
 
     started = board_ws.start(settings.ESP32_WS_URL, settings.SENSOR_NAMES)
@@ -37,10 +42,10 @@ async def start(name: str, n_repetitions: int = Query(ge=1, le=10), session: Asy
     session.add(ms)
     await session.commit()
 
-    measurement_state.set_current_sample(sample.id, n_repetitions)
+    measurement_state.set_current_sample(sample.id, n_repetitions, min_medicion_seconds)
     measurement_state.set_current_ms(ms.id)
 
-    return {"started": True, "sample_id": sample.id, "name": sample.name, "n_repetitions": n_repetitions}
+    return {"started": True, "sample_id": sample.id, "name": sample.name, "n_repetitions": n_repetitions, "min_medicion_seconds": min_medicion_seconds}
 
 
 async def _flush_and_close() -> None:

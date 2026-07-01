@@ -51,6 +51,7 @@ class Observer:
         state = "start_base"
         rep = 0
         medicion_start: float | None = None
+        stable_since: float | None = None
         was_running = False
 
         while True:
@@ -62,6 +63,7 @@ class Observer:
                 state = "start_base"
                 rep = 0
                 medicion_start = None
+                stable_since = None
                 self._analyzer.reset(require_rise=False)
 
             was_running = running
@@ -89,6 +91,8 @@ class Observer:
                 samples = await self._fetch_window_by_ms()
                 result = self._analyzer.update(samples)
                 self._log(state, result)
+                measurement_state.set_stable(result.stable)
+                measurement_state.set_sensor_risen({n: r.has_risen for n, r in result.channels.items()})
                 if result.stable:
                     print(f"[observer] rep {rep}/{n_reps}: base estable → medicion")
                     board_ws.set_estado("medicion")
@@ -102,8 +106,18 @@ class Observer:
                 samples = await self._fetch_window_by_ms()
                 result = self._analyzer.update(samples)
                 self._log(state, result)
-                if elapsed >= self._min_medicion_seconds and result.stable:
-                    print(f"[observer] rep {rep}/{n_reps}: medicion completa ({elapsed:.1f}s)")
+                measurement_state.set_stable(result.stable)
+                measurement_state.set_sensor_risen({n: r.has_risen for n, r in result.channels.items()})
+                if result.stable:
+                    if stable_since is None:
+                        stable_since = time.monotonic()
+                else:
+                    stable_since = None
+                stable_elapsed = time.monotonic() - stable_since if stable_since is not None else 0.0
+                if stable_since is not None and stable_elapsed >= measurement_state.get_min_medicion_seconds():
+                    print(f"[observer] rep {rep}/{n_reps}: medicion completa ({elapsed:.1f}s total, {stable_elapsed:.1f}s estable)")
+                    stable_since = None
+                    medicion_start = None
                     await self._close_current_ms()
                     await self._increment_completed_repetitions()
                     if rep >= n_reps:
@@ -112,7 +126,6 @@ class Observer:
                         board_ws.stop()
                         state = "start_base"
                         rep = 0
-                        medicion_start = None
                         self._analyzer.reset(require_rise=False)
                     else:
                         board_ws.set_estado("cooldown")
@@ -123,6 +136,8 @@ class Observer:
                 samples = await self._fetch_window_cooldown()
                 result = self._analyzer.update(samples)
                 self._log(state, result)
+                measurement_state.set_stable(result.stable)
+                measurement_state.set_sensor_risen({n: r.has_risen for n, r in result.channels.items()})
                 if result.stable:
                     print(f"[observer] cooldown estable → rep {rep + 1}")
                     state = "start_base"

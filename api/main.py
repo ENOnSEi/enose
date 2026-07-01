@@ -70,13 +70,19 @@ async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
                         asyncio.create_task(_abort_on_sensor_fault())
                         fault = True
                         break
+                    sensor_risen = measurement_state.get_sensor_risen()
                     session.add(Reading(
                         sample_id=measurement_state.get_current_sample_id(),
                         measurement_set_id=measurement_state.get_current_ms(),
                         arduino_ms=arduino_ms,
                         estado=estado,
+                        is_stable=measurement_state.get_stable(),
                         values=[
-                            ReadingValue(sensor_id=sensor_cache[name], value=val)
+                            ReadingValue(
+                                sensor_id=sensor_cache[name],
+                                value=val,
+                                has_risen=sensor_risen.get(name, False),
+                            )
                             for name, val in values.items()
                             if name in sensor_cache
                         ],

@@ -28,6 +28,8 @@ class Reading(SQLModel, table=True):
 
     estado: str = Field(max_length=20)
 
+    is_stable: bool = Field(default=False)
+
     captured_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False),
@@ -53,3 +55,5 @@ class ReadingValue(SQLModel, table=True):
     )
 
     value: int
+
+    has_risen: bool = Field(default=False)
