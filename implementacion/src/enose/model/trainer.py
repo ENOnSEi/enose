@@ -20,13 +20,15 @@ import seaborn as sns
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
+from sklearn.base import clone
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 from enose.config import (
-    DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, FILENAME_COLUMN,
+    CLASSIFIER, DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, FILENAME_COLUMN,
     GRID_PARAMS, LABEL_COLUMN, ML_CONFIG, NON_FEATURE_COLUMNS, PCA_CONFIG,
 )
 from enose.features.perkey_pca import PerKeyPCA
@@ -61,6 +63,11 @@ class ModelTrainer:
         self.results: Dict = {}
         self.n_groups: int = 0           # nº de grabaciones distintas (para el informe)
         self.split_info: Optional[Dict] = None  # resumen de la división train/test
+        # Evaluación sólo-CV (sin holdout separado): se activa cuando la CV anidada
+        # no es viable por datos escasos (p. ej. LDA con muchas clases y pocas reps).
+        self._cv_only: bool = False
+        self._cv_sgkf = None
+        self._cv_groups = None
 
     # ------------------------------------------------------------------
     # Pasos del entrenamiento
@@ -147,6 +154,19 @@ class ModelTrainer:
             logger.error(f"Error dividiendo datos: {e}")
             return False
 
+    def _build_classifier(self):
+        """Devuelve el estimador final según CLASSIFIER (config). El paso se
+        llama siempre 'clf' en el Pipeline, así que las rejillas usan 'clf__'."""
+        if CLASSIFIER == "lda":
+            # solver='lsqr' es el que admite shrinkage (regulariza la covarianza,
+            # imprescindible con p>n). El shrinkage concreto lo elige GridSearchCV.
+            return LinearDiscriminantAnalysis(solver="lsqr")
+        if CLASSIFIER == "svm":
+            # probability=False: las métricas usan predict() (no predict_proba), y
+            # probability=True dispara una CV interna (Platt) costosa e innecesaria.
+            return SVC(random_state=42, probability=False)
+        raise ValueError(f"CLASSIFIER desconocido: '{CLASSIFIER}'")
+
     def build_pipeline(self) -> bool:
         try:
             steps = []
@@ -155,44 +175,70 @@ class ModelTrainer:
             if FEATURE_MODE == "pca_signal":
                 steps.append(("pca", PerKeyPCA(PCA_CONFIG)))
             steps.append(("scaler", StandardScaler()))
-            # probability=False: las métricas usan predict() (no predict_proba), y
-            # probability=True dispara una CV interna (Platt) costosa e innecesaria aquí.
-            steps.append(("svm", SVC(random_state=42, probability=False)))
+            steps.append(("clf", self._build_classifier()))
 
             self.pipeline = Pipeline(steps)
-            logger.info("Pipeline construido: " + " -> ".join(name for name, _ in steps))
+            logger.info(f"Pipeline construido ({CLASSIFIER}): " + " -> ".join(name for name, _ in steps))
             return True
         except Exception as e:
             logger.error(f"Error construyendo pipeline: {e}")
             return False
 
+    def _fit_grid(self, X, y, groups) -> bool:
+        """Ajusta un GridSearchCV con CV por grupos sobre (X, y, groups).
+
+        Devuelve True si entrena; False si los folds no son viables (p. ej. un
+        clasificador como LDA que exige más muestras que clases por fold).
+        """
+        groups_per_class = (
+            pd.DataFrame({"y": np.asarray(y), "g": groups})
+            .drop_duplicates("g").groupby("y")["g"].count().min()
+        )
+        n_splits = min(ML_CONFIG.n_splits_cv, int(groups_per_class))
+        if n_splits < 2:
+            return False
+
+        sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        gs = GridSearchCV(
+            estimator=self.pipeline,
+            param_grid=GRID_PARAMS,
+            cv=sgkf,
+            scoring=ML_CONFIG.scoring_metric,
+            n_jobs=ML_CONFIG.n_jobs,
+            verbose=ML_CONFIG.verbose,
+        )
+        logger.info(f"GridSearchCV con {n_splits} folds por grupos — iniciando búsqueda...")
+        try:
+            gs.fit(X, y, groups=groups)
+        except Exception as e:
+            logger.warning(f"GridSearchCV no viable con estos folds: {e}")
+            return False
+
+        self.grid_search = gs
+        self._cv_sgkf = sgkf
+        self._cv_groups = groups
+        return True
+
     def optimize_hyperparameters(self) -> bool:
         try:
-            # La CV también debe respetar los grupos: el nº de folds se limita por los
-            # grupos (grabaciones) distintos por clase en el train, no por las muestras.
-            groups_per_class = (
-                pd.DataFrame({"y": self.y_train.to_numpy(), "g": self.groups_train})
-                .drop_duplicates("g").groupby("y")["g"].count().min()
-            )
-            n_splits = min(ML_CONFIG.n_splits_cv, int(groups_per_class))
-            if n_splits < 2:
-                logger.error("Grupos insuficientes en la clase minoritaria del train para CV "
-                             "(se requieren ≥2 grabaciones).")
-                return False
+            # Intento 1: CV anidada sobre el train (deja el holdout para reporte).
+            if self._fit_grid(self.X_train, self.y_train, self.groups_train):
+                self._cv_only = False
+                logger.info("Búsqueda completada (CV anidada con holdout de test)")
+                return True
 
-            sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            self.grid_search = GridSearchCV(
-                estimator=self.pipeline,
-                param_grid=GRID_PARAMS,
-                cv=sgkf,
-                scoring=ML_CONFIG.scoring_metric,
-                n_jobs=ML_CONFIG.n_jobs,
-                verbose=ML_CONFIG.verbose,
-            )
-            logger.info(f"GridSearchCV con {n_splits} folds por grupos — iniciando búsqueda...")
-            self.grid_search.fit(self.X_train, self.y_train, groups=self.groups_train)
-            logger.info("Búsqueda completada")
-            return True
+            # Intento 2 (datos escasos): evaluación SÓLO por CV sobre todo el dataset,
+            # sin holdout separado. Es la estadística correcta con n pequeño y evita
+            # folds con menos muestras que clases. El modelo de producción se reajusta
+            # sobre todos los datos.
+            logger.warning("CV anidada no viable; evaluando por CV sobre todo el dataset (sin holdout).")
+            if self._fit_grid(self.X, self.y, self.groups):
+                self._cv_only = True
+                logger.info("Búsqueda completada (evaluación sólo-CV, out-of-fold)")
+                return True
+
+            logger.error("No se pudo ajustar el modelo: grupos insuficientes por clase.")
+            return False
         except Exception as e:
             logger.error(f"Error en GridSearchCV: {e}", exc_info=True)
             return False
@@ -200,17 +246,40 @@ class ModelTrainer:
     def evaluate_model(self) -> bool:
         try:
             best = self.grid_search.best_estimator_
-            y_pred = best.predict(self.X_test)
-            acc_train = accuracy_score(self.y_train, best.predict(self.X_train))
-            acc_test = accuracy_score(self.y_test, y_pred)
-            bal_acc_test = balanced_accuracy_score(self.y_test, y_pred)
-            cm = confusion_matrix(self.y_test, y_pred)
+
+            if self._cv_only:
+                # Predicciones out-of-fold sobre todo el dataset: cada muestra se
+                # predice cuando cae en el fold de test. Sin fuga y estadísticamente
+                # honesto con n pequeño. y_true/y_pred cubren todas las muestras.
+                est = clone(self.pipeline).set_params(**self.grid_search.best_params_)
+                y_true = self.y
+                y_pred = cross_val_predict(
+                    est, self.X, self.y, cv=self._cv_sgkf,
+                    groups=self._cv_groups, n_jobs=ML_CONFIG.n_jobs,
+                )
+                acc_train = accuracy_score(self.y, best.predict(self.X))
+                self.y_test = y_true  # para las visualizaciones (report figure)
+                self.split_info = {
+                    "n_train": int(len(self.X)),
+                    "n_test": int(len(self.X)),
+                    "n_test_groups": int(pd.Series(self._cv_groups).nunique()),
+                    "test_size_effective": 1.0,
+                }
+                logger.info("Evaluación out-of-fold sobre todo el dataset (sin holdout separado).")
+            else:
+                y_true = self.y_test
+                y_pred = best.predict(self.X_test)
+                acc_train = accuracy_score(self.y_train, best.predict(self.X_train))
+
+            acc_test = accuracy_score(y_true, y_pred)
+            bal_acc_test = balanced_accuracy_score(y_true, y_pred)
+            cm = confusion_matrix(y_true, y_pred)
 
             logger.info(f"Mejores params: {self.grid_search.best_params_}")
             logger.info(f"CV score ({ML_CONFIG.scoring_metric}): {self.grid_search.best_score_*100:.2f}%  "
-                        f"| Train acc: {acc_train*100:.2f}%  | Test acc: {acc_test*100:.2f}%  "
-                        f"| Test balanced acc: {bal_acc_test*100:.2f}%")
-            logger.info("\n" + classification_report(self.y_test, y_pred))
+                        f"| Train acc: {acc_train*100:.2f}%  | OOF/Test acc: {acc_test*100:.2f}%  "
+                        f"| OOF/Test balanced acc: {bal_acc_test*100:.2f}%")
+            logger.info("\n" + classification_report(y_true, y_pred))
 
             self.results = {
                 "best_params": self.grid_search.best_params_,

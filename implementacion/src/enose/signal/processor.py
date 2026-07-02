@@ -3,8 +3,8 @@ Procesador de señal de sensor.
 
 Implementa SignalProcessorProtocol (spec/contracts/processor.py):
   - Suavizado Savitzky-Golay
-  - Normalización por línea base (R0 - Rs) / R0, donde R0 sale de la fase 'base'
-    de la grabación (aire limpio) y Rs es la respuesta de la fase 'medicion'.
+  - Normalización por línea base (Rs - R0) / R0, donde R0 sale de la fase 'base'
+    de la grabación (aire limpio) y Rs es la lectura ADC de la fase 'medicion'.
   - Extracción de características por ventana temporal (modo handcrafted)
   - Segmentación de señal normalizada por ventana (modo PCA)
 """
@@ -54,9 +54,9 @@ class SignalProcessor:
         self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None
     ) -> np.ndarray:
         """
-        Normalización fraccional: (R0 - Rs) / R0.
+        Normalización fraccional: (Rs - R0) / R0.
 
-        R0 (resistencia en aire limpio) se estima como:
+        R0 (lectura ADC en aire limpio) se estima como:
           - la media de ``baseline`` (fase 'base' de la grabación), si se aporta;
           - si no, la media de las primeras ``baseline_samples`` muestras de la
             propia señal (fallback para grabaciones sin fase 'base').
@@ -72,7 +72,7 @@ class SignalProcessor:
         if R0 == 0:
             logger.warning("R0 = 0. Usando Z-score como normalización de respaldo.")
             return (signal - np.mean(signal)) / (np.std(signal) + 1e-10)
-        return (R0 - signal) / R0
+        return (signal - R0) / R0
 
     def process_signal(
         self, signal: np.ndarray, baseline: Optional[Sequence[float]] = None

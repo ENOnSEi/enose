@@ -1,15 +1,23 @@
 # ADR 002 — Modo de extracción de características: PCA vs Handcrafted
 
-**Estado**: Aceptado (PCA como default) · **Revisado en V6 (default → handcrafted)**  
-**Fecha**: 2026-05-30  
+**Estado**: Aceptado — **default actual: `handcrafted` + ratios entre sensores**  
+**Fecha**: 2026-05-30 · revisado 2026-06-03 (V6) y 2026-06-30 (ratios)  
 **Autor**: Jesus Veiga
 
+> **Actualización 2026-06-30 (ratios entre sensores):**
+> - A las 36 features handcrafted se añaden **24 ratios** entre pares de sensores
+>   (`max` y `auc` de 4 pares × 3 ventanas). Los ratios cancelan la intensidad del
+>   vapor y capturan la composición relativa del gas. Total: **60 features**.
+> - Resultado: la accuracy de test subió de 36% a 64% (11 clases × 3 reps).
+> - Detalle y justificación geométrica en
+>   `documentacion/como_funcionan_las_features_y_el_modelo.md`.
+>
 > **Actualización 2026-06-03 (V6 — migración a 4 sensores TGS y CSV con fases):**
 > - Con el nuevo formato cada grabación produce, por defecto, **una muestra**, por lo
 >   que el default pasa a **`handcrafted`** (features deterministas sin necesidad de
 >   ajustar un PCA con pocas muestras). `pca_signal` sigue disponible y es preferible
 >   cuando se generan muchas muestras (ventaneando la fase `medicion`).
-> - La dimensionalidad handcrafted ahora es **36 features** (4 sensores × 3 ventanas ×
+> - La dimensionalidad handcrafted base es **36 features** (4 sensores × 3 ventanas ×
 >   3 estadísticos), no 54.
 > - La agrupación para la validación por grupos es por **grabación** (sufijo `#wNN`),
 >   no por vino-lote. El resto del razonamiento de este ADR sigue vigente.
@@ -22,12 +30,12 @@ dataset como al proceso de inferencia en producción.
 
 ## Opciones
 
-### `handcrafted` (max, AUC, slope por ventana)
+### `handcrafted` (max, AUC, slope por ventana + ratios entre sensores)
 
 - **Ventajas**: Determinista, interpretable, sin artefactos de ajuste
-- **Dimensionalidad**: 54 features (6 sensores × 3 ventanas × 3 estadísticos)
+- **Dimensionalidad**: 36 estadísticos (4 sensores × 3 ventanas × 3) + 24 ratios = 60
 - **Producción**: Solo necesita `best_model.pkl`
-- **Desventaja**: Descarta información de la forma de la curva
+- **Desventaja**: Descarta el detalle punto a punto de la forma de la curva
 
 ### `pca_signal` (proyección PCA por sensor×ventana)
 
@@ -38,10 +46,15 @@ dataset como al proceso de inferencia en producción.
 
 ## Decisión
 
-`pca_signal` como default (`FEATURE_MODE = 'pca_signal'` en `config.py`).
+`handcrafted` como default (`FEATURE_MODE = 'handcrafted'` en `config.py`), con los
+ratios entre sensores incluidos.
 
-Justificación: mayor accuracy en validación y captura información de la dinámica
-temporal completa de la señal, que es precisamente lo que diferencia calidades de vino.
+Justificación: con el formato actual cada grabación produce una sola muestra, así que
+ajustar un PCA con tan pocas muestras no es fiable. Los estadísticos handcrafted son
+deterministas y, sumados a los ratios (que aíslan la huella química de la intensidad),
+dan la mejor accuracy con los datos disponibles sin riesgo de sobreajuste del PCA.
+`pca_signal` queda como alternativa para cuando haya muchas muestras por grabación
+(ventaneando `medicion`).
 
 ## Cómo cambiar
 
