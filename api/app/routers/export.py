@@ -61,6 +61,36 @@ class SampleDetail(SampleSummary):
     measurement_sets: list[MeasurementSetSummary]
 
 
+class SensorMean(BaseModel):
+    sensor: str
+    mean: float | None
+
+
+class MeasurementSetStableMeans(BaseModel):
+    measurement_set_id: int
+    repetition_number: int
+    means: list[SensorMean]
+
+
+class SampleStableMeans(BaseModel):
+    sample_id: int
+    sample_name: str
+    measurement_sets: list[MeasurementSetStableMeans]
+
+
+class PCAPoint(BaseModel):
+    sample_id: int
+    sample_name: str
+    pc1: float
+    pc2: float
+
+
+class PCAResult(BaseModel):
+    points: list[PCAPoint]
+    explained_variance_ratio: list[float]
+    variables: list[str]
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _get_sensor_map(session: AsyncSession) -> dict[int, str]:
@@ -116,28 +146,30 @@ def _combined_has_risen(reading: Reading, policy: str) -> bool:
     return False
 
 
-async def _fetch_base_means(
-    session: AsyncSession, ms_ids: list[int]
+async def _fetch_means_by_estado(
+    session: AsyncSession, ms_ids: list[int], estado: str, is_stable: bool = True
 ) -> dict[int, dict[int, float]]:
-    """Media de value por (measurement_set_id, sensor_id) en la fase base estable
-    (estado="base", is_stable=true) — usada para restar la base a la medición."""
+    """Media de value por (measurement_set_id, sensor_id) para un estado y
+    valor de is_stable dados — usada tanto para restar la base estable a la
+    medición (estado="base", is_stable=true) como para reportar la media de
+    medición estable o no estable (estado="medicion")."""
     stmt = (
         select(
             Reading.measurement_set_id,
             ReadingValue.sensor_id,
-            func.avg(ReadingValue.value).label("mean_base"),
+            func.avg(ReadingValue.value).label("mean_val"),
         )
         .join(ReadingValue, ReadingValue.reading_id == Reading.id)
         .where(
             Reading.measurement_set_id.in_(ms_ids),
-            Reading.estado == "base",
-            Reading.is_stable.is_(True),
+            Reading.estado == estado,
+            Reading.is_stable.is_(is_stable),
         )
         .group_by(Reading.measurement_set_id, ReadingValue.sensor_id)
     )
     result: dict[int, dict[int, float]] = {}
     for row in (await session.execute(stmt)).all():
-        result.setdefault(row.measurement_set_id, {})[row.sensor_id] = float(row.mean_base)
+        result.setdefault(row.measurement_set_id, {})[row.sensor_id] = float(row.mean_val)
     return result
 
 
@@ -349,7 +381,7 @@ async def export_readings(
 
     base_means_by_ms: dict[int, dict[int, float]] = {}
     if subtract_base:
-        base_means_by_ms = await _fetch_base_means(session, found_ms_ids)
+        base_means_by_ms = await _fetch_means_by_estado(session, found_ms_ids, "base")
 
     readings_by_ms: dict[int, list[Reading]] = {}
     for r in all_readings:
@@ -403,3 +435,307 @@ async def export_recording(
         is_complete=ms.stopped_at is not None,
         readings=_pivot_readings(list(readings), sensor_map),
     )
+
+
+# ── Medias de fase de medición (estable/no estable, con/sin base) ───────────
+
+async def _compute_stable_means(
+    session: AsyncSession,
+    sample_ids: list[int],
+    is_stable: bool = True,
+    subtract_base: bool = False,
+) -> list[SampleStableMeans]:
+    """Media por sensor de la fase de medición (estable o no, según
+    ``is_stable``) de cada measurement set de las muestras pedidas.
+    Si ``subtract_base`` es True, a cada media se le resta la media de la
+    base estable (estado=base, is_stable=true) de ese mismo sensor/ms."""
+    sensor_map = await _get_sensor_map(session)
+
+    stmt = (
+        select(MeasurementSet)
+        .join(Sample, Sample.id == MeasurementSet.sample_id)
+        .options(selectinload(MeasurementSet.sample))
+        .where(MeasurementSet.sample_id.in_(sample_ids))
+        .order_by(MeasurementSet.sample_id, MeasurementSet.repetition_number)
+    )
+    ms_list = (await session.scalars(stmt)).all()
+    if not ms_list:
+        return []
+
+    ms_ids = [ms.id for ms in ms_list]
+    means_by_ms = await _fetch_means_by_estado(session, ms_ids, "medicion", is_stable)
+
+    base_means_by_ms: dict[int, dict[int, float]] = {}
+    if subtract_base:
+        base_means_by_ms = await _fetch_means_by_estado(session, ms_ids, "base", True)
+
+    samples_by_id: dict[int, SampleStableMeans] = {}
+    for ms in ms_list:
+        sample_out = samples_by_id.setdefault(
+            ms.sample_id,
+            SampleStableMeans(sample_id=ms.sample_id, sample_name=ms.sample.name, measurement_sets=[]),
+        )
+        ms_means = means_by_ms.get(ms.id, {})
+        ms_base_means = base_means_by_ms.get(ms.id, {})
+        sensor_means: list[SensorMean] = []
+        for sensor_id, sensor_name in sensor_map.items():
+            value = ms_means.get(sensor_id)
+            if value is not None and subtract_base:
+                value -= ms_base_means.get(sensor_id, 0)
+            sensor_means.append(SensorMean(sensor=sensor_name, mean=value))
+        sample_out.measurement_sets.append(
+            MeasurementSetStableMeans(
+                measurement_set_id=ms.id,
+                repetition_number=ms.repetition_number,
+                means=sensor_means,
+            )
+        )
+
+    return [samples_by_id[sid] for sid in sample_ids if sid in samples_by_id]
+
+
+@router.get("/stable-means", response_model=list[SampleStableMeans])
+async def get_stable_means(
+    sample_ids: list[int] = Query(..., min_length=1, description="IDs de las muestras a incluir"),
+    is_stable: bool = Query(
+        default=True,
+        description="True=fase de medición ya asentada (is_stable=true), False=fase no estable (transitoria/ascendente)",
+    ),
+    subtract_base: bool = Query(
+        default=False,
+        description="Resta a cada media la media de la base estable (estado=base, is_stable=true) de ese sensor/measurement set",
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Media por sensor de la fase de medición (estable o no, según is_stable)
+    de cada measurement set de cada muestra pedida, opcionalmente restando la base."""
+    result = await _compute_stable_means(session, sample_ids, is_stable, subtract_base)
+    if not result:
+        raise HTTPException(404, "No measurement sets found for the given sample_ids")
+    return result
+
+
+_SENSOR_COLORS = {
+    "tgs2620": "#1f77b4",
+    "tgs2611": "#ff7f0e",
+    "tgs2602": "#2ca02c",
+    "tgs2600": "#d62728",
+}
+_CHART_BAR_WIDTH = 0.18
+_CHART_MS_GAP = 0.15
+_CHART_SAMPLE_GAP = 0.6
+
+
+@router.get("/stable-means/chart")
+async def get_stable_means_chart(
+    sample_ids: list[int] = Query(..., min_length=1, description="IDs de las muestras a incluir"),
+    is_stable: bool = Query(
+        default=True,
+        description="True=fase de medición ya asentada (is_stable=true), False=fase no estable (transitoria/ascendente)",
+    ),
+    subtract_base: bool = Query(
+        default=False,
+        description="Resta a cada media la media de la base estable (estado=base, is_stable=true) de ese sensor/measurement set",
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Gráfico de barras agrupado (PNG): grupo=muestra, subgrupo=measurement
+    set, barra=sensor. Usa la misma consulta que /stable-means."""
+    samples = await _compute_stable_means(session, sample_ids, is_stable, subtract_base)
+    if not samples:
+        raise HTTPException(404, "No measurement sets found for the given sample_ids")
+
+    import io
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from fastapi.responses import Response
+
+    n_ms = sum(len(s.measurement_sets) for s in samples)
+    fig, ax = plt.subplots(figsize=(max(6, n_ms * 1.4), 5))
+
+    x = 0.0
+    ms_ticks: list[tuple[float, str]] = []
+    sample_ticks: list[tuple[float, str]] = []
+    seen_sensors: set[str] = set()
+
+    for sample in samples:
+        group_start = x
+        for ms in sample.measurement_sets:
+            cluster_start = x
+            for i, sm in enumerate(ms.means):
+                bar_x = x + i * _CHART_BAR_WIDTH
+                height = sm.mean or 0
+                ax.bar(
+                    bar_x,
+                    height,
+                    width=_CHART_BAR_WIDTH,
+                    color=_SENSOR_COLORS.get(sm.sensor, "#888888"),
+                    label=sm.sensor if sm.sensor not in seen_sensors else None,
+                )
+                seen_sensors.add(sm.sensor)
+            cluster_width = len(ms.means) * _CHART_BAR_WIDTH
+            ms_ticks.append((cluster_start + cluster_width / 2 - _CHART_BAR_WIDTH / 2, f"rep{ms.repetition_number}"))
+            x += cluster_width + _CHART_MS_GAP
+        sample_ticks.append(((group_start + x - _CHART_MS_GAP) / 2, sample.sample_name))
+        x += _CHART_SAMPLE_GAP
+
+    ax.set_xticks([t[0] for t in ms_ticks])
+    ax.set_xticklabels([t[1] for t in ms_ticks], fontsize=8)
+    for xc, name in sample_ticks:
+        ax.annotate(
+            name,
+            xy=(xc, 0),
+            xytext=(0, -28),
+            textcoords="offset points",
+            ha="center",
+            fontsize=10,
+            fontweight="bold",
+            annotation_clip=False,
+        )
+    ax.set_ylabel("Media ADC (medición estable)")
+    ax.set_title("Medición estable por muestra / measurement set / sensor")
+    ax.legend(title="Sensor")
+    fig.subplots_adjust(bottom=0.22)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
+# ── PCA entre muestras (sensor × measurement_set como variable) ────────────
+
+async def _compute_pca(
+    session: AsyncSession,
+    sample_ids: list[int],
+    is_stable: bool = True,
+    subtract_base: bool = False,
+) -> PCAResult:
+    """PCA (2 componentes) donde cada muestra es una observación y cada
+    combinación sensor×measurement_set (repetición) es una variable. Todas
+    las muestras deben compartir exactamente el mismo conjunto de
+    repetition_number y no tener ninguna media nula, para poder construir
+    una matriz rectangular."""
+    samples = await _compute_stable_means(session, sample_ids, is_stable, subtract_base)
+    if len(samples) < 2:
+        raise HTTPException(400, "Se necesitan al menos 2 muestras con datos para la PCA")
+
+    rep_sets = [frozenset(ms.repetition_number for ms in s.measurement_sets) for s in samples]
+    if len(set(rep_sets)) != 1:
+        detail = {s.sample_name: sorted(r) for s, r in zip(samples, rep_sets)}
+        raise HTTPException(
+            400,
+            "Todas las muestras deben tener el mismo número de measurement sets para "
+            f"comparar sensor×measurement_set como variable. Repeticiones encontradas: {detail}",
+        )
+    reps = sorted(rep_sets[0])
+    sensor_names = sorted({sm.sensor for ms in samples[0].measurement_sets for sm in ms.means})
+    variables = [f"{sensor}_rep{rep}" for sensor in sensor_names for rep in reps]
+
+    rows: list[list[float]] = []
+    for s in samples:
+        ms_by_rep = {ms.repetition_number: ms for ms in s.measurement_sets}
+        row: list[float] = []
+        for sensor in sensor_names:
+            for rep in reps:
+                sm = next((m for m in ms_by_rep[rep].means if m.sensor == sensor), None)
+                if sm is None or sm.mean is None:
+                    raise HTTPException(
+                        400,
+                        f"Muestra '{s.sample_name}' no tiene media estable para {sensor} en "
+                        f"rep{rep} — no se puede construir una matriz completa",
+                    )
+                row.append(sm.mean)
+        rows.append(row)
+
+    import numpy as np
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    X = StandardScaler().fit_transform(np.array(rows))
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(X)
+
+    return PCAResult(
+        points=[
+            PCAPoint(sample_id=s.sample_id, sample_name=s.sample_name, pc1=float(c[0]), pc2=float(c[1]))
+            for s, c in zip(samples, coords)
+        ],
+        explained_variance_ratio=[float(v) for v in pca.explained_variance_ratio_],
+        variables=variables,
+    )
+
+
+@router.get("/pca", response_model=PCAResult)
+async def get_pca(
+    sample_ids: list[int] = Query(
+        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2, todas con el mismo número de measurement sets)"
+    ),
+    is_stable: bool = Query(
+        default=True, description="True=fase de medición estable, False=fase no estable (transitoria/ascendente)"
+    ),
+    subtract_base: bool = Query(
+        default=False, description="Resta la media de la base estable antes de construir las variables"
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """PCA (2 componentes): cada muestra es una observación, cada
+    sensor×measurement_set es una variable. Todas las muestras deben tener
+    el mismo número de measurement sets con datos completos."""
+    return await _compute_pca(session, sample_ids, is_stable, subtract_base)
+
+
+@router.get("/pca/chart")
+async def get_pca_chart(
+    sample_ids: list[int] = Query(
+        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2, todas con el mismo número de measurement sets)"
+    ),
+    is_stable: bool = Query(
+        default=True, description="True=fase de medición estable, False=fase no estable (transitoria/ascendente)"
+    ),
+    subtract_base: bool = Query(
+        default=False, description="Resta la media de la base estable antes de construir las variables"
+    ),
+    session: AsyncSession = Depends(get_session),
+):
+    """Scatter 2D (PNG) de la PCA: un punto por muestra, etiquetado con su
+    nombre, ejes con el % de varianza explicada por cada componente."""
+    result = await _compute_pca(session, sample_ids, is_stable, subtract_base)
+
+    import io
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from fastapi.responses import Response
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    cmap = plt.get_cmap("tab10")
+    for i, p in enumerate(result.points):
+        color = cmap(i % 10)
+        ax.scatter(p.pc1, p.pc2, color=color, s=90, label=p.sample_name)
+        ax.annotate(
+            p.sample_name,
+            xy=(p.pc1, p.pc2),
+            xytext=(6, 6),
+            textcoords="offset points",
+            fontsize=8,
+        )
+
+    var1, var2 = result.explained_variance_ratio
+    ax.set_xlabel(f"PC1 ({var1 * 100:.1f}% var)")
+    ax.set_ylabel(f"PC2 ({var2 * 100:.1f}% var)")
+    ax.set_title("PCA de muestras (sensor × measurement set como variables)")
+    ax.axhline(0, color="#cccccc", linewidth=0.8, zorder=0)
+    ax.axvline(0, color="#cccccc", linewidth=0.8, zorder=0)
+    ax.legend(fontsize=7, loc="best")
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="image/png")
