@@ -70,8 +70,12 @@ esp-clean: ## Clean the ESP32 build artifacts
 # --- Full stack (podman compose) ----------------------------------------------
 
 .PHONY: up
-up: ## Start API + Mosquitto + Postgres (build if needed)
-	$(COMPOSE) up --build
+up: ## Start API + Mosquitto + Postgres
+	$(COMPOSE) up -d
+ 
+.PHONY: up-build
+up-build: ## Start API + Mosquitto + Postgres (build if needed)
+	$(COMPOSE) up --build -d
 
 .PHONY: down
 down: ## Stop the stack
