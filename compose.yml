@@ -1,0 +1,40 @@
+# ENose stack: FastAPI backend + Mosquitto MQTT broker.
+#
+# The ESP32-S3 node connects to the broker over the LAN (by the host IP, port
+# 1883) and exchanges readings/commands with the API through it. The database
+# is external (Neon) so no Postgres service is needed here.
+#
+#   cp api/.env.example api/.env   # fill DATABASE_URL etc.
+#   docker compose up --build
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: enose-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"      # MQTT (exposed on the LAN for the ESP32)
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
+  api:
+    build: ./api
+    container_name: enose-api
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./api/.env
+    environment:
+      # Reach the broker via the compose network service name.
+      - BOARD_TRANSPORT=mqtt
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
