@@ -9,10 +9,28 @@ para no pisarse entre ramas.
 
 | Carpeta | Descripción |
 |---|---|
+| [`api/`](api/) | Backend FastAPI: adquisición de datos, observador en tiempo real y API REST. Habla con la placa por MQTT. |
+| [`esp32s3/`](esp32s3/) | Firmware PlatformIO para la ESP32-S3: lee los 4 sensores y publica/recibe por MQTT. |
 | [`analog-reader-arduino/`](analog-reader-arduino/) | Sketch de Arduino: lee 4 sensores TGS y los vuelca por serie cada 250 ms. |
 | [`serial-reader/`](serial-reader/) | Cliente Python que lee el puerto serie y graba un CSV etiquetando la fase (`inicio`/`base`/`medicion`). |
 | [`datasets/`](datasets/) | Grabaciones CSV de las mezclas medidas (una por fichero). |
 | [`implementacion/`](implementacion/) | Pipeline de ML: procesamiento de señal, extracción de características y clasificación SVM. |
+
+## Ejecutar desde la raíz
+
+Cada subproyecto define sus propias librerías (`api/pyproject.toml`,
+`esp32s3/platformio.ini`), pero se manejan desde la raíz sin `cd` mediante el
+`Makefile`:
+
+```bash
+make            # lista todos los comandos disponibles
+make up         # levanta API + Mosquitto + Postgres (docker compose)
+make api-dev    # API con autoreload
+make api-test   # tests del analizador
+make esp-build  # compila el firmware de la ESP32
+make esp-upload # flashea la ESP32
+make esp-monitor# monitor serie
+```
 
 ## Hardware y formato de datos
 
