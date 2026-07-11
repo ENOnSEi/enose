@@ -1,13 +1,31 @@
-# ENose stack: FastAPI backend + Mosquitto MQTT broker.
+# ENose stack: FastAPI backend + Mosquitto MQTT broker + local Postgres.
 #
 # The ESP32-S3 node connects to the broker over the LAN (by the host IP, port
-# 1883) and exchanges readings/commands with the API through it. The database
-# is external (Neon) so no Postgres service is needed here.
+# 1883) and exchanges readings/commands with the API through it. A local
+# Postgres is included for testing (override DATABASE_URL to use Neon instead).
 #
-#   cp api/.env.example api/.env   # fill DATABASE_URL etc.
+#   cp api/.env.example api/.env   # fill any remaining settings
 #   docker compose up --build
 
 services:
+  db:
+    image: postgres:16
+    container_name: enose-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=enose_db
+    ports:
+      - "5432:5432"      # exposed so you can inspect the DB from the host
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d enose_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: enose-mosquitto
@@ -24,17 +42,23 @@ services:
     container_name: enose-api
     restart: unless-stopped
     depends_on:
-      - mosquitto
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
     ports:
       - "8000:8000"
     env_file:
       - ./api/.env
     environment:
-      # Reach the broker via the compose network service name.
+      # Reach the DB and broker via the compose network service names.
+      # These override whatever is in api/.env.
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/enose_db
       - BOARD_TRANSPORT=mqtt
       - MQTT_BROKER_HOST=mosquitto
       - MQTT_BROKER_PORT=1883
 
 volumes:
+  db-data:
   mosquitto-data:
   mosquitto-log:
