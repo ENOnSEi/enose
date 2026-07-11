@@ -13,6 +13,13 @@ UV      := uv --directory $(API_DIR)
 PIO     := pio
 COMPOSE := podman compose
 
+# Overridable connection settings for the check targets below.
+MQTT_HOST ?= localhost
+MQTT_PORT ?= 1883
+API_URL   ?= http://localhost:8000
+READINGS_TOPIC ?= enose/readings
+COMMANDS_TOPIC ?= enose/commands
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -77,3 +84,38 @@ down-v: ## Stop the stack and wipe volumes (drops the local DB)
 .PHONY: logs
 logs: ## Follow the stack logs
 	$(COMPOSE) logs -f
+
+# --- MQTT / broker checks (need mosquitto-clients; broker must be running) ------
+
+.PHONY: mqtt-ping
+mqtt-ping: ## Check the broker is reachable (publishes to a test topic)
+	mosquitto_pub -h $(MQTT_HOST) -p $(MQTT_PORT) -t enose/ping -m ok \
+		&& echo "broker $(MQTT_HOST):$(MQTT_PORT) OK"
+
+.PHONY: mqtt-commands
+mqtt-commands: ## Watch commands the API sends to the board (Ctrl-C to stop)
+	mosquitto_sub -h $(MQTT_HOST) -p $(MQTT_PORT) -t $(COMMANDS_TOPIC) -v
+
+.PHONY: mqtt-readings
+mqtt-readings: ## Watch readings the board sends to the API (Ctrl-C to stop)
+	mosquitto_sub -h $(MQTT_HOST) -p $(MQTT_PORT) -t $(READINGS_TOPIC) -v
+
+.PHONY: mqtt-fake-reading
+mqtt-fake-reading: ## Publish one fake sensor reading (simulates the ESP32)
+	mosquitto_pub -h $(MQTT_HOST) -p $(MQTT_PORT) -t $(READINGS_TOPIC) \
+		-m '{"type":"reading","arduino_ms":1000,"values":{"tgs2620":100,"tgs2611":200,"tgs2602":300,"tgs2600":400}}' \
+		&& echo "published fake reading to $(READINGS_TOPIC)"
+
+# --- API run control (needs curl; API must be running) -------------------------
+
+.PHONY: run-start
+run-start: ## Start a measurement run (NAME=test N=1 MIN=5)
+	curl -fsS -X POST "$(API_URL)/serial/start?name=$(or $(NAME),test)&n_repetitions=$(or $(N),1)&min_medicion_seconds=$(or $(MIN),5)" ; echo
+
+.PHONY: run-stop
+run-stop: ## Stop the current run
+	curl -fsS -X POST "$(API_URL)/serial/stop" ; echo
+
+.PHONY: run-status
+run-status: ## Show the board/MQTT connection status
+	curl -fsS "$(API_URL)/serial/status" ; echo

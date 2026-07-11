@@ -32,6 +32,19 @@ make esp-upload # flashea la ESP32
 make esp-monitor# monitor serie
 ```
 
+### Probar la comunicación MQTT (sin placa)
+
+Con la pila levantada (`make up`) y `mosquitto-clients` instalado:
+
+```bash
+make mqtt-ping         # comprueba que el broker responde
+make run-status        # estado de la conexión API↔placa (connected/readings)
+make run-start         # arranca una medición (NAME=test N=1 MIN=5)
+make mqtt-fake-reading # publica una lectura falsa (simula la ESP32)
+make mqtt-commands     # observa los comandos que la API envía a la placa
+make run-stop          # detiene la medición
+```
+
 ## Hardware y formato de datos
 
 La nariz usa **4 sensores TGS** (Figaro): `v20`=TGS2620, `v11`=TGS2611,
