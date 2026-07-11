@@ -24,7 +24,7 @@ Cada subproyecto define sus propias librerías (`api/pyproject.toml`,
 
 ```bash
 make            # lista todos los comandos disponibles
-make up         # levanta API + Mosquitto + Postgres (docker compose)
+make up         # levanta API + Mosquitto + Postgres (podman compose)
 make api-dev    # API con autoreload
 make api-test   # tests del analizador
 make esp-build  # compila el firmware de la ESP32

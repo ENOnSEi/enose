@@ -11,6 +11,7 @@ API_DIR := api
 ESP_DIR := esp32s3
 UV      := uv --directory $(API_DIR)
 PIO     := pio
+COMPOSE := podman compose
 
 .DEFAULT_GOAL := help
 
@@ -59,20 +60,20 @@ esp-monitor: ## Open the ESP32 serial monitor
 esp-clean: ## Clean the ESP32 build artifacts
 	$(PIO) run -d $(ESP_DIR) -t clean
 
-# --- Full stack (docker compose) ----------------------------------------------
+# --- Full stack (podman compose) ----------------------------------------------
 
 .PHONY: up
 up: ## Start API + Mosquitto + Postgres (build if needed)
-	docker compose up --build
+	$(COMPOSE) up --build
 
 .PHONY: down
 down: ## Stop the stack
-	docker compose down
+	$(COMPOSE) down
 
 .PHONY: down-v
 down-v: ## Stop the stack and wipe volumes (drops the local DB)
-	docker compose down -v
+	$(COMPOSE) down -v
 
 .PHONY: logs
 logs: ## Follow the stack logs
-	docker compose logs -f
+	$(COMPOSE) logs -f

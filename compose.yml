@@ -5,7 +5,7 @@
 # Postgres is included for testing (override DATABASE_URL to use Neon instead).
 #
 #   cp api/.env.example api/.env   # fill any remaining settings
-#   docker compose up --build
+#   podman compose up --build
 
 services:
   db:

@@ -23,5 +23,5 @@ pio device monitor                                # serial logs
 ```
 
 `secrets.h` holds WiFi credentials and the broker host/port and is gitignored.
-Set `MQTT_BROKER_HOST` to the IP of the machine running `docker compose up` (see
+Set `MQTT_BROKER_HOST` to the IP of the machine running `podman compose up` (see
 the repo-root `compose.yml`, which runs the API + Mosquitto broker).
