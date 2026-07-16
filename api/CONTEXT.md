@@ -39,3 +39,9 @@ Si la fase de `base` no se estabiliza en 5 minutos, el observer debe abortar el 
 
 ### Estado
 Etiqueta de cada `Reading` que indica la fase en que fue capturada: `base`, `medicion` o `cooldown`. Lo gestiona el observer automáticamente. Los endpoints `PUT /serial/estado/{estado}` y las opciones equivalentes del CLI existen únicamente para pruebas manuales durante el desarrollo, antes de que el observer esté totalmente calibrado. No deben usarse en producción para alterar mediciones reales.
+
+### Sensor
+Identidad estable de un sensor de gas, con `name` (único) y `created_at`. Se siembra automáticamente al arrancar desde `SENSOR_NAMES` en `.env`. El emparejamiento con las lecturas del ESP32 es **por nombre** (el JSON del board envía `{"tgs2620": N, ...}`), nunca por posición ni por pin — el orden de `SENSOR_NAMES` en la configuración es irrelevante para el parsing. El cableado físico (a qué pin ADC está conectado cada sensor) es responsabilidad exclusiva del firmware del ESP32 y no se guarda en la base de datos.
+
+**Regla de identidad:** si un sensor físico se sustituye o se reordena, **no reutilizar el mismo `name`**. Crear un `name` nuevo (p. ej. añadiendo un sufijo de revisión) para que las `ReadingValue` capturadas antes y después del cambio queden bajo `sensor_id` distintos. `created_at` permite saber desde cuándo existe cada identidad de sensor; combinado con `Reading.captured_at`, sirve para reconstruir qué mapeo de sensores estaba vigente en cualquier instante. Esto es intencionalmente manual (no hay migración automática de "revisión de hardware") porque solo el operador que cambia el sensor físico sabe que ocurrió el cambio.
+
