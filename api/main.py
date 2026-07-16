@@ -8,6 +8,7 @@ from sqlalchemy import select
 import app.models
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal, Base, engine
+from app.db.migrations_sync import sync_schema_with_alembic
 from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading, ReadingValue
 from app.models.sample import Sample
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
 
     await create_db_and_tables(engine)
+    await sync_schema_with_alembic(engine)
 
     sensor_cache = await _seed_sensors()
 
