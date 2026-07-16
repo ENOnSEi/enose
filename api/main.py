@@ -23,10 +23,10 @@ from app.db.database import create_db_and_tables
 
 async def _seed_sensors() -> dict[str, int]:
     async with AsyncSessionLocal() as session:
-        for name, pin in zip(settings.SENSOR_NAMES, settings.SENSOR_PINS):
+        for name in settings.SENSOR_NAMES:
             exists = await session.scalar(select(Sensor).where(Sensor.name == name))
             if not exists:
-                session.add(Sensor(name=name, pin=pin))
+                session.add(Sensor(name=name))
         await session.commit()
         rows = (await session.scalars(select(Sensor))).all()
         return {s.name: s.id for s in rows}

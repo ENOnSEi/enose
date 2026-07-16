@@ -85,7 +85,9 @@ stopped_at              (tgs2620/A3, ...)
 `Reading` agrupa los 4 valores de una muestra del Arduino. `ReadingValue` tiene una fila por sensor
 por muestra. `MeasurementSet` agrupa todas las lecturas de una sesión (de start a stop).
 
-Para añadir sensores nuevos, inserta en `sensors` y actualiza `SENSOR_NAMES` / `SENSOR_PINS` en `.env`.
+Para añadir sensores nuevos, actualiza `SENSOR_NAMES` en `.env` (se siembran automáticamente en `sensors`
+al arrancar). El emparejamiento con las lecturas del ESP32 es por nombre, no por posición. El cableado
+físico (pines ADC) es responsabilidad exclusiva del firmware — no se guarda en la base de datos.
 
 ### Flujo de datos en runtime
 
