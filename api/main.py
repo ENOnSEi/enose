@@ -14,6 +14,7 @@ from app.models.sample import Sample
 from app.models.sensor import Sensor
 from app.routers.export import router as export_router
 from app.routers.measurement_sets import router as measurement_sets_router
+from app.routers.sensors import router as sensors_router
 from app.routers.serial import router as serial_router
 from app.services import board_ws, measurement_state
 from app.services.analyzer import Policy
@@ -28,7 +29,9 @@ async def _seed_sensors() -> dict[str, int]:
             if not exists:
                 session.add(Sensor(name=name))
         await session.commit()
-        rows = (await session.scalars(select(Sensor))).all()
+        rows = (
+            await session.scalars(select(Sensor).where(Sensor.retired_at.is_(None)))
+        ).all()
         return {s.name: s.id for s in rows}
 
 
@@ -129,6 +132,7 @@ app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
 app.include_router(serial_router)
 app.include_router(measurement_sets_router)
 app.include_router(export_router)
+app.include_router(sensors_router)
 
 
 @app.get("/health")
