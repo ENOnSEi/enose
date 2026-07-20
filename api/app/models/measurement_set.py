@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, Integer
 from sqlalchemy import Column
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlmodel import Field, SQLModel
 from sqlmodel import Relationship
 
@@ -23,6 +24,11 @@ class MeasurementSet(SQLModel, table=True):
     stopped_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
+    outlier_sensors: list[int] = Field(
+        default_factory=list,
+        sa_column=Column(ARRAY(Integer), nullable=False, server_default="{}"),
     )
 
 

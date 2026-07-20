@@ -490,8 +490,8 @@ async def _compute_stable_means(
                 means=sensor_means,
             )
         )
-
-    return [samples_by_id[sid] for sid in sample_ids if sid in samples_by_id]
+    a = [samples_by_id[sid] for sid in sample_ids if sid in samples_by_id]
+    return a
 
 
 @router.get("/stable-means", response_model=list[SampleStableMeans])
