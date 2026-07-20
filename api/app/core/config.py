@@ -9,8 +9,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     ESP32_WS_URL: str = "ws://192.168.1.135:81"
     # Orden debe coincidir con el orden de valores que envía el Arduino
+    # Identidad de los sensores. El emparejamiento con las lecturas del
+    # ESP32 es por nombre (el JSON envía {"tgs2620": N, ...}), no por
+    # posición en esta lista. El cableado físico (pines ADC) vive solo en
+    # el firmware — no se duplica aquí, ver api/CONTEXT.md.
     SENSOR_NAMES: list[str] = ["tgs2620", "tgs2611", "tgs2602", "tgs2600"]
-    SENSOR_PINS: list[str] = ["1", "2", "3", "4"]
     # Ventana de regresión en segundos (la dinámica de los TGS es de segundos)
     OBSERVER_WINDOW_SECONDS: float = 4.0
     # Umbral central de pendiente (u/s), pequeño positivo. Calibrado con datasets/

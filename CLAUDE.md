@@ -32,7 +32,7 @@ The API is the active part of the system. Everything below runs from `api/`.
 
 On startup, the lifespan context:
 1. Creates DB tables (`SQLModel.metadata.create_all`)
-2. Seeds the `sensors` table from `SENSOR_NAMES`/`SENSOR_PINS` in `.env`
+2. Seeds the `sensors` table from `SENSOR_NAMES` in `.env` (matched by name against ESP32 readings, not position; physical wiring lives only in firmware)
 3. Starts two permanent async background tasks: `_drain_to_db` and `Observer.run()`
 
 The observer and drain run for the lifetime of the process. No measurement is active until `POST /serial/start` is called.
