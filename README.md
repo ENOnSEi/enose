@@ -9,10 +9,41 @@ para no pisarse entre ramas.
 
 | Carpeta | Descripción |
 |---|---|
+| [`api/`](api/) | Backend FastAPI: adquisición de datos, observador en tiempo real y API REST. Habla con la placa por MQTT. |
+| [`esp32s3/`](esp32s3/) | Firmware PlatformIO para la ESP32-S3: lee los 4 sensores y publica/recibe por MQTT. |
 | [`analog-reader-arduino/`](analog-reader-arduino/) | Sketch de Arduino: lee 4 sensores TGS y los vuelca por serie cada 250 ms. |
 | [`serial-reader/`](serial-reader/) | Cliente Python que lee el puerto serie y graba un CSV etiquetando la fase (`inicio`/`base`/`medicion`). |
 | [`datasets/`](datasets/) | Grabaciones CSV de las mezclas medidas (una por fichero). |
 | [`implementacion/`](implementacion/) | Pipeline de ML: procesamiento de señal, extracción de características y clasificación SVM. |
+
+## Ejecutar desde la raíz
+
+Cada subproyecto define sus propias librerías (`api/pyproject.toml`,
+`esp32s3/platformio.ini`), pero se manejan desde la raíz sin `cd` mediante el
+`Makefile`:
+
+```bash
+make            # lista todos los comandos disponibles
+make up         # levanta API + Mosquitto + Postgres (podman compose)
+make api-dev    # API con autoreload
+make api-test   # tests del analizador
+make esp-build  # compila el firmware de la ESP32
+make esp-upload # flashea la ESP32
+make esp-monitor# monitor serie
+```
+
+### Probar la comunicación MQTT (sin placa)
+
+Con la pila levantada (`make up`) y `mosquitto-clients` instalado:
+
+```bash
+make mqtt-ping         # comprueba que el broker responde
+make run-status        # estado de la conexión API↔placa (connected/readings)
+make run-start         # arranca una medición (NAME=test N=1 MIN=5)
+make mqtt-fake-reading # publica una lectura falsa (simula la ESP32)
+make mqtt-commands     # observa los comandos que la API envía a la placa
+make run-stop          # detiene la medición
+```
 
 ## Hardware y formato de datos
 

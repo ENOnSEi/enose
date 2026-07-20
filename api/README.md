@@ -35,9 +35,26 @@ uv run uvicorn main:app --reload
 ```
 
 Al arrancar:
-- Crea las tablas si no existen
+- Crea las tablas si no existen (bootstrap para una BD nueva)
+- Sincroniza el esquema con Alembic: si la revisión aplicada en la BD queda por detrás o por delante de la que conocen los ficheros de `migrations/` de la rama/commit actual, aplica `upgrade`/`downgrade` automáticamente (ver sección "Migraciones" más abajo)
 - Puebla la tabla `sensors` con los sensores configurados
 - Inicia el observer y el drain en background (el lector serial arranca al llamar a `/serial/start`)
+
+## Migraciones (Alembic)
+
+El esquema de la BD se versiona con [Alembic](https://alembic.sqlalchemy.org/) en `migrations/`. `env.py` toma la URL de conexión de `settings.DATABASE_URL` (no de `alembic.ini`), así que un solo `.env` gobierna tanto el runtime como las migraciones.
+
+```bash
+uv run alembic revision --autogenerate -m "descripción del cambio"   # generar una migración a partir del diff de modelos
+uv run alembic upgrade head                                          # aplicar migraciones pendientes
+uv run alembic downgrade -1                                          # revertir la última migración
+uv run alembic current                                               # ver la revisión aplicada en la BD
+```
+
+En cada arranque, `sync_schema_with_alembic()` (`app/db/migrations_sync.py`) compara la revisión almacenada en la BD contra la que la rama/commit actual conoce (los ficheros presentes en `migrations/versions/`):
+- Si la BD está por detrás → `upgrade head`.
+- Si la BD está por delante pero la revisión sigue estando entre los ficheros presentes → `downgrade` hasta el head actual.
+- Si la revisión de la BD no aparece entre los ficheros presentes (p. ej. acabas de hacer `git checkout` a una rama/commit anterior a esa migración) → se omite la sincronización automática y se registra un aviso; hay que cambiar de rama o ejecutar `alembic upgrade`/`downgrade` a mano.
 
 ## CLI
 
@@ -85,7 +102,9 @@ stopped_at              (tgs2620/A3, ...)
 `Reading` agrupa los 4 valores de una muestra del Arduino. `ReadingValue` tiene una fila por sensor
 por muestra. `MeasurementSet` agrupa todas las lecturas de una sesión (de start a stop).
 
-Para añadir sensores nuevos, inserta en `sensors` y actualiza `SENSOR_NAMES` / `SENSOR_PINS` en `.env`.
+Para añadir sensores nuevos, actualiza `SENSOR_NAMES` en `.env` (se siembran automáticamente en `sensors`
+al arrancar). El emparejamiento con las lecturas del ESP32 es por nombre, no por posición. El cableado
+físico (pines ADC) es responsabilidad exclusiva del firmware — no se guarda en la base de datos.
 
 ### Flujo de datos en runtime
 

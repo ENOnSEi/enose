@@ -1,0 +1,6 @@
+# Local WiFi / broker credentials
+secrets.h
+include/secrets.h
+
+# PlatformIO build artifacts
+.pio/

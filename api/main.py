@@ -8,14 +8,16 @@ from sqlalchemy import select
 import app.models
 from app.core.config import settings
 from app.db.database import AsyncSessionLocal, Base, engine
+from app.db.migrations_sync import sync_schema_with_alembic
 from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading, ReadingValue
 from app.models.sample import Sample
 from app.models.sensor import Sensor
 from app.routers.export import router as export_router
 from app.routers.measurement_sets import router as measurement_sets_router
+from app.routers.sensors import router as sensors_router
 from app.routers.serial import router as serial_router
-from app.services import board_ws, measurement_state
+from app.services import board, measurement_state
 from app.services.analyzer import Policy
 from app.services.observer import Observer
 from app.db.database import create_db_and_tables
@@ -23,12 +25,14 @@ from app.db.database import create_db_and_tables
 
 async def _seed_sensors() -> dict[str, int]:
     async with AsyncSessionLocal() as session:
-        for name, pin in zip(settings.SENSOR_NAMES, settings.SENSOR_PINS):
+        for name in settings.SENSOR_NAMES:
             exists = await session.scalar(select(Sensor).where(Sensor.name == name))
             if not exists:
-                session.add(Sensor(name=name, pin=pin))
+                session.add(Sensor(name=name))
         await session.commit()
-        rows = (await session.scalars(select(Sensor))).all()
+        rows = (
+            await session.scalars(select(Sensor).where(Sensor.retired_at.is_(None)))
+        ).all()
         return {s.name: s.id for s in rows}
 
 
@@ -56,7 +60,7 @@ async def _abort_on_sensor_fault() -> None:
 async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
     while True:
         await asyncio.sleep(0.5)
-        items = board_ws.drain()
+        items = board.drain()
         if not items:
             continue
         try:
@@ -66,7 +70,7 @@ async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
                     zero_sensors = [n for n, v in values.items() if v == 0]
                     if zero_sensors:
                         print(f"[drain] zero value on sensors {zero_sensors} — aborting measurement")
-                        board_ws.stop()
+                        board.stop()
                         asyncio.create_task(_abort_on_sensor_fault())
                         fault = True
                         break
@@ -99,6 +103,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
 
     await create_db_and_tables(engine)
+    await sync_schema_with_alembic(engine)
 
     sensor_cache = await _seed_sensors()
 
@@ -119,7 +124,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    board_ws.stop()
+    board.stop()
     drain_task.cancel()
     observer_task.cancel()
     await engine.dispose()
@@ -129,6 +134,7 @@ app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
 app.include_router(serial_router)
 app.include_router(measurement_sets_router)
 app.include_router(export_router)
+app.include_router(sensors_router)
 
 
 @app.get("/health")

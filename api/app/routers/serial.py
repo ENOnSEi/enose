@@ -9,7 +9,7 @@ from app.db.database import AsyncSessionLocal, get_session
 from app.models.measurement_set import MeasurementSet
 from app.models.sample import Sample
 from app.schemas.reading import SerialStatus
-from app.services import board_ws, measurement_state
+from app.services import board, measurement_state
 
 router = APIRouter(prefix="/serial", tags=["serial"])
 
@@ -18,7 +18,7 @@ EstadoType = Literal["base", "medicion", "cooldown"]
 
 @router.get("/status", response_model=SerialStatus)
 async def status():
-    return board_ws.get_status()
+    return board.get_status()
 
 
 @router.post("/start")
@@ -30,7 +30,7 @@ async def start(
 ):
     from app.core.config import settings
 
-    started = board_ws.start(settings.ESP32_WS_URL, settings.SENSOR_NAMES)
+    started = board.start(settings.SENSOR_NAMES)
     if not started:
         raise HTTPException(400, "Already running")
 
@@ -50,7 +50,7 @@ async def start(
 
 async def _flush_and_close() -> None:
     for _ in range(20):
-        if board_ws.get_status()["readings_queued"] == 0:
+        if board.get_status()["readings_queued"] == 0:
             break
         await asyncio.sleep(0.5)
 
@@ -77,12 +77,12 @@ async def _flush_and_close() -> None:
 
 @router.post("/stop")
 async def stop():
-    board_ws.stop()
+    board.stop()
     asyncio.create_task(_flush_and_close())
     return {"stopped": True}
 
 
 @router.put("/estado/{estado}")
 async def set_estado(estado: EstadoType):
-    board_ws.set_estado(estado)
+    board.set_estado(estado)
     return {"estado": estado}

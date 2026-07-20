@@ -15,4 +15,5 @@ dependencies = [
     "sqlmodel>=0.0.39",
     "matplotlib>=3.11.0",
     "scikit-learn>=1.9.0",
+    "paho-mqtt>=2.1.0",
 ]
