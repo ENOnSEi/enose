@@ -17,7 +17,7 @@ from app.routers.export import router as export_router
 from app.routers.measurement_sets import router as measurement_sets_router
 from app.routers.sensors import router as sensors_router
 from app.routers.serial import router as serial_router
-from app.services import board_ws, measurement_state
+from app.services import board, measurement_state
 from app.services.analyzer import Policy
 from app.services.observer import Observer
 from app.db.database import create_db_and_tables
@@ -60,7 +60,7 @@ async def _abort_on_sensor_fault() -> None:
 async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
     while True:
         await asyncio.sleep(0.5)
-        items = board_ws.drain()
+        items = board.drain()
         if not items:
             continue
         try:
@@ -70,7 +70,7 @@ async def _drain_to_db(sensor_cache: dict[str, int]) -> None:
                     zero_sensors = [n for n, v in values.items() if v == 0]
                     if zero_sensors:
                         print(f"[drain] zero value on sensors {zero_sensors} — aborting measurement")
-                        board_ws.stop()
+                        board.stop()
                         asyncio.create_task(_abort_on_sensor_fault())
                         fault = True
                         break
@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    board_ws.stop()
+    board.stop()
     drain_task.cancel()
     observer_task.cancel()
     await engine.dispose()

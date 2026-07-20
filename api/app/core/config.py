@@ -7,7 +7,16 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://neondb_owner:npg_U2aFuczki6MP@ep-patient-boat-abeyr0xp-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
     APP_NAME: str = "ENose API"
     DEBUG: bool = False
+    # Transporte con la placa: "mqtt" (broker Mosquitto) o "ws" (WebSocket directo)
+    BOARD_TRANSPORT: str = "mqtt"
     ESP32_WS_URL: str = "ws://192.168.1.135:81"
+    # --- MQTT (broker Mosquitto) ---
+    MQTT_BROKER_HOST: str = "localhost"
+    MQTT_BROKER_PORT: int = 1883
+    MQTT_READINGS_TOPIC: str = "enose/readings"
+    MQTT_COMMANDS_TOPIC: str = "enose/commands"
+    MQTT_USERNAME: str = ""
+    MQTT_PASSWORD: str = ""
     # Orden debe coincidir con el orden de valores que envía el Arduino
     # Identidad de los sensores. El emparejamiento con las lecturas del
     # ESP32 es por nombre (el JSON envía {"tgs2620": N, ...}), no por
