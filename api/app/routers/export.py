@@ -85,10 +85,17 @@ class PCAPoint(BaseModel):
     pc2: float
 
 
+class ExcludedSample(BaseModel):
+    sample_id: int
+    sample_name: str
+    reason: str
+
+
 class PCAResult(BaseModel):
     points: list[PCAPoint]
     explained_variance_ratio: list[float]
     variables: list[str]
+    excluded_samples: list[ExcludedSample]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -177,6 +184,10 @@ async def _fetch_means_by_estado(
 
 @router.get("/samples", response_model=list[SampleSummary])
 async def list_samples(
+    name: str | None = Query(
+        default=None,
+        description="Filtra por coincidencia parcial (insensible a mayúsculas) en el nombre de la muestra",
+    ),
     only_fully_complete: bool = Query(
         default=False,
         description=(
@@ -192,6 +203,8 @@ async def list_samples(
 ):
     """List all samples with their dates and repetition counts."""
     stmt = select(Sample)
+    if name:
+        stmt = stmt.where(Sample.name.ilike(f"%{name}%"))
     if only_fully_complete:
         stmt = stmt.where(
             Sample.completed_repetitions == Sample.n_repetitions,
@@ -444,11 +457,14 @@ async def _compute_stable_means(
     sample_ids: list[int],
     is_stable: bool = True,
     subtract_base: bool = False,
+    ms_ids: list[int] | None = None,
 ) -> list[SampleStableMeans]:
     """Media por sensor de la fase de medición (estable o no, según
     ``is_stable``) de cada measurement set de las muestras pedidas.
     Si ``subtract_base`` es True, a cada media se le resta la media de la
-    base estable (estado=base, is_stable=true) de ese mismo sensor/ms."""
+    base estable (estado=base, is_stable=true) de ese mismo sensor/ms.
+    Si ``ms_ids`` se pasa, restringe a esos measurement sets concretos (p.ej.
+    tras filtrar outliers) en lugar de usar todos los de la muestra."""
     sensor_map = await _get_sensor_map(session)
 
     stmt = (
@@ -458,6 +474,8 @@ async def _compute_stable_means(
         .where(MeasurementSet.sample_id.in_(sample_ids))
         .order_by(MeasurementSet.sample_id, MeasurementSet.repetition_number)
     )
+    if ms_ids is not None:
+        stmt = stmt.where(MeasurementSet.id.in_(ms_ids))
     ms_list = (await session.scalars(stmt)).all()
     if not ms_list:
         return []
@@ -608,45 +626,116 @@ async def get_stable_means_chart(
 
 # ── PCA entre muestras (sensor × measurement_set como variable) ────────────
 
+async def _select_pca_measurement_sets(
+    session: AsyncSession,
+    sample_ids: list[int],
+    min_repetitions: int,
+) -> tuple[dict[int, list[MeasurementSet]], list[ExcludedSample]]:
+    """Para cada sample_id (deduplicado, orden preservado), selecciona sus
+    measurement sets completos (stopped_at no nulo) sin outliers
+    (outlier_sensors vacío), ordenados por repetition_number ascendente.
+    Si una muestra tiene menos de min_repetitions válidos, se excluye por
+    completo (no aborta la petición); si tiene más, se queda con los últimos
+    min_repetitions (los de mayor repetition_number). El orden ascendente
+    resultante es la posición ordinal (1º válido, 2º válido, ...) que luego
+    se usa para nombrar variables de PCA, no el repetition_number real."""
+    sample_ids = list(dict.fromkeys(sample_ids))
+
+    sample_rows = (await session.scalars(select(Sample).where(Sample.id.in_(sample_ids)))).all()
+    sample_name_by_id = {s.id: s.name for s in sample_rows}
+
+    stmt = (
+        select(MeasurementSet)
+        .where(
+            MeasurementSet.sample_id.in_(sample_ids),
+            MeasurementSet.stopped_at.is_not(None),
+        )
+        .order_by(MeasurementSet.sample_id, MeasurementSet.repetition_number)
+    )
+    ms_list = (await session.scalars(stmt)).all()
+
+    valid_by_sample: dict[int, list[MeasurementSet]] = {}
+    for ms in ms_list:
+        if not ms.outlier_sensors:
+            valid_by_sample.setdefault(ms.sample_id, []).append(ms)
+
+    included: dict[int, list[MeasurementSet]] = {}
+    excluded: list[ExcludedSample] = []
+
+    for sid in sample_ids:
+        name = sample_name_by_id.get(sid)
+        if name is None:
+            excluded.append(
+                ExcludedSample(sample_id=sid, sample_name=f"#{sid}", reason="muestra no encontrada")
+            )
+            continue
+        valid = valid_by_sample.get(sid, [])
+        if len(valid) < min_repetitions:
+            excluded.append(
+                ExcludedSample(
+                    sample_id=sid,
+                    sample_name=name,
+                    reason=f"solo {len(valid)} measurement sets sin outliers (mínimo {min_repetitions})",
+                )
+            )
+            continue
+        included[sid] = valid[-min_repetitions:]
+
+    return included, excluded
+
+
 async def _compute_pca(
     session: AsyncSession,
     sample_ids: list[int],
+    min_repetitions: int = 3,
     is_stable: bool = True,
     subtract_base: bool = False,
 ) -> PCAResult:
     """PCA (2 componentes) donde cada muestra es una observación y cada
-    combinación sensor×measurement_set (repetición) es una variable. Todas
-    las muestras deben compartir exactamente el mismo conjunto de
-    repetition_number y no tener ninguna media nula, para poder construir
-    una matriz rectangular."""
-    samples = await _compute_stable_means(session, sample_ids, is_stable, subtract_base)
-    if len(samples) < 2:
-        raise HTTPException(400, "Se necesitan al menos 2 muestras con datos para la PCA")
+    combinación sensor×posición-ordinal-de-repetición es una variable. Antes
+    de calcular, cada muestra se reduce a sus últimos min_repetitions
+    measurement sets completos y sin outliers (ver
+    _select_pca_measurement_sets); las que no lleguen a min_repetitions se
+    excluyen (reportadas en excluded_samples) en vez de abortar toda la
+    petición. Como cada muestra que sobrevive aporta exactamente
+    min_repetitions measurement sets por construcción, la alineación de
+    variables por posición ordinal está garantizada sin necesidad de que los
+    repetition_number reales coincidan entre muestras."""
+    included, excluded = await _select_pca_measurement_sets(session, sample_ids, min_repetitions)
 
-    rep_sets = [frozenset(ms.repetition_number for ms in s.measurement_sets) for s in samples]
-    if len(set(rep_sets)) != 1:
-        detail = {s.sample_name: sorted(r) for s, r in zip(samples, rep_sets)}
+    if len(included) < 2:
         raise HTTPException(
             400,
-            "Todas las muestras deben tener el mismo número de measurement sets para "
-            f"comparar sensor×measurement_set como variable. Repeticiones encontradas: {detail}",
+            {
+                "message": (
+                    f"Se necesitan al menos 2 muestras con {min_repetitions} measurement sets "
+                    f"sin outliers para la PCA; quedaron {len(included)} tras aplicar el filtro"
+                ),
+                "excluded_samples": [e.model_dump() for e in excluded],
+            },
         )
-    reps = sorted(rep_sets[0])
+
+    included_sample_ids = list(included.keys())
+    all_ms_ids = [ms.id for mss in included.values() for ms in mss]
+
+    samples = await _compute_stable_means(
+        session, included_sample_ids, is_stable, subtract_base, ms_ids=all_ms_ids
+    )
+
     sensor_names = sorted({sm.sensor for ms in samples[0].measurement_sets for sm in ms.means})
-    variables = [f"{sensor}_rep{rep}" for sensor in sensor_names for rep in reps]
+    variables = [f"{sensor}_rep{i}" for sensor in sensor_names for i in range(1, min_repetitions + 1)]
 
     rows: list[list[float]] = []
     for s in samples:
-        ms_by_rep = {ms.repetition_number: ms for ms in s.measurement_sets}
         row: list[float] = []
         for sensor in sensor_names:
-            for rep in reps:
-                sm = next((m for m in ms_by_rep[rep].means if m.sensor == sensor), None)
+            for ms in s.measurement_sets:
+                sm = next((m for m in ms.means if m.sensor == sensor), None)
                 if sm is None or sm.mean is None:
                     raise HTTPException(
                         400,
-                        f"Muestra '{s.sample_name}' no tiene media estable para {sensor} en "
-                        f"rep{rep} — no se puede construir una matriz completa",
+                        f"Muestra '{s.sample_name}' no tiene media estable para {sensor} en uno "
+                        "de sus measurement sets seleccionados — no se puede construir una matriz completa",
                     )
                 row.append(sm.mean)
         rows.append(row)
@@ -666,13 +755,24 @@ async def _compute_pca(
         ],
         explained_variance_ratio=[float(v) for v in pca.explained_variance_ratio_],
         variables=variables,
+        excluded_samples=excluded,
     )
 
 
 @router.get("/pca", response_model=PCAResult)
 async def get_pca(
     sample_ids: list[int] = Query(
-        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2, todas con el mismo número de measurement sets)"
+        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2 tras excluir las que no cumplan min_repetitions)"
+    ),
+    min_repetitions: int = Query(
+        default=3,
+        ge=1,
+        description=(
+            "Mínimo de measurement sets completos y sin outliers que debe tener una muestra "
+            "para entrar en la PCA. Si tiene más, se usan solo los últimos min_repetitions "
+            "(los de mayor repetition_number); si tiene menos, la muestra se excluye por "
+            "completo (ver excluded_samples en la respuesta)"
+        ),
     ),
     is_stable: bool = Query(
         default=True, description="True=fase de medición estable, False=fase no estable (transitoria/ascendente)"
@@ -683,15 +783,26 @@ async def get_pca(
     session: AsyncSession = Depends(get_session),
 ):
     """PCA (2 componentes): cada muestra es una observación, cada
-    sensor×measurement_set es una variable. Todas las muestras deben tener
-    el mismo número de measurement sets con datos completos."""
-    return await _compute_pca(session, sample_ids, is_stable, subtract_base)
+    sensor×posición-ordinal-de-repetición es una variable. Las muestras con
+    menos de min_repetitions measurement sets sin outliers se excluyen (no
+    fallan la petición); si tras excluir quedan menos de 2 muestras, 400."""
+    return await _compute_pca(session, sample_ids, min_repetitions, is_stable, subtract_base)
 
 
 @router.get("/pca/chart")
 async def get_pca_chart(
     sample_ids: list[int] = Query(
-        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2, todas con el mismo número de measurement sets)"
+        ..., min_length=2, description="IDs de las muestras a comparar (mínimo 2 tras excluir las que no cumplan min_repetitions)"
+    ),
+    min_repetitions: int = Query(
+        default=3,
+        ge=1,
+        description=(
+            "Mínimo de measurement sets completos y sin outliers que debe tener una muestra "
+            "para entrar en la PCA. Si tiene más, se usan solo los últimos min_repetitions "
+            "(los de mayor repetition_number); si tiene menos, la muestra se excluye por "
+            "completo (ver la nota en el gráfico)"
+        ),
     ),
     is_stable: bool = Query(
         default=True, description="True=fase de medición estable, False=fase no estable (transitoria/ascendente)"
@@ -702,8 +813,10 @@ async def get_pca_chart(
     session: AsyncSession = Depends(get_session),
 ):
     """Scatter 2D (PNG) de la PCA: un punto por muestra, etiquetado con su
-    nombre, ejes con el % de varianza explicada por cada componente."""
-    result = await _compute_pca(session, sample_ids, is_stable, subtract_base)
+    nombre, ejes con el % de varianza explicada por cada componente. Las
+    muestras excluidas por no llegar a min_repetitions se listan en una nota
+    bajo el título (el PNG no puede llevar el campo excluded_samples)."""
+    result = await _compute_pca(session, sample_ids, min_repetitions, is_stable, subtract_base)
 
     import io
 
@@ -728,11 +841,16 @@ async def get_pca_chart(
     var1, var2 = result.explained_variance_ratio
     ax.set_xlabel(f"PC1 ({var1 * 100:.1f}% var)")
     ax.set_ylabel(f"PC2 ({var2 * 100:.1f}% var)")
-    ax.set_title("PCA de muestras (sensor × measurement set como variables)")
+    fig.suptitle("PCA de muestras (sensor × measurement set como variables)", fontsize=12)
+    if result.excluded_samples:
+        note = "Excluidas: " + "; ".join(
+            f"{e.sample_name} ({e.reason})" for e in result.excluded_samples
+        )
+        ax.set_title(note, fontsize=8, color="#a33333", wrap=True)
     ax.axhline(0, color="#cccccc", linewidth=0.8, zorder=0)
     ax.axvline(0, color="#cccccc", linewidth=0.8, zorder=0)
     ax.legend(fontsize=7, loc="best")
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=120)

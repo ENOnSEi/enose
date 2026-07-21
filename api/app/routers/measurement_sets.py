@@ -350,6 +350,20 @@ async def detect_outliers(
             sample_id=sample_id, sample_name=sample.name, measurement_sets=[]
         )
 
+    if len(ms_list) < 5:
+        raise HTTPException(
+            400,
+            f"Sample {sample_id} has only {len(ms_list)} completed measurement sets; "
+            "at least 5 are required to detect outliers",
+        )
+
+    if any(ms.outlier_sensors for ms in ms_list):
+        raise HTTPException(
+            400,
+            f"Sample {sample_id} already has measurement sets labeled as outliers; "
+            "re-running detect-outliers is not allowed",
+        )
+
     sensor_map = await _get_sensor_map(session)
     sensor_id_by_name = {name: sid for sid, name in sensor_map.items()}
 
