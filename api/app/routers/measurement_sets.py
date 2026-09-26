@@ -13,6 +13,7 @@ from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading, ReadingValue
 from app.models.sample import Sample
 from app.models.sensor import Sensor
+from app.routers.export import _compute_stable_means, _get_sensor_map
 
 router = APIRouter(tags=["stats"])
 
@@ -63,6 +64,18 @@ class MeasurementSetStatsResponse(BaseModel):
 class SampleStatsResponse(BaseModel):
     sample_id: int
     measurement_sets: list[MeasurementSetStats]
+
+
+class MeasurementSetOutliers(BaseModel):
+    measurement_set_id: int
+    repetition_number: int
+    outlier_sensors: list[str]
+
+
+class SampleOutliersResponse(BaseModel):
+    sample_id: int
+    sample_name: str
+    measurement_sets: list[MeasurementSetOutliers]
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -306,4 +319,97 @@ async def get_sample_stats(
             )
             for ms_id in ms_ids
         ],
+    )
+
+
+@router.post("/samples/{sample_id}/detect-outliers", response_model=SampleOutliersResponse)
+async def detect_outliers(
+    sample_id: int, session: AsyncSession = Depends(get_session)
+):
+    """Marca, por sensor, qué repeticiones (MeasurementSet) de un sample son
+    outliers respecto a sus hermanas, usando el rango de Tukey
+    ([Q1 - 1.5·IQR, Q3 + 1.5·IQR]) sobre el delta estable (medición - base) de
+    cada sensor. Persiste el resultado en MeasurementSet.outlier_sensors."""
+    sample = await session.get(Sample, sample_id)
+    if not sample:
+        raise HTTPException(404, f"Sample {sample_id} not found")
+
+    ms_list = (
+        await session.scalars(
+            select(MeasurementSet)
+            .where(
+                MeasurementSet.sample_id == sample_id,
+                MeasurementSet.stopped_at.is_not(None),
+            )
+            .order_by(MeasurementSet.repetition_number)
+        )
+    ).all()
+
+    if not ms_list:
+        return SampleOutliersResponse(
+            sample_id=sample_id, sample_name=sample.name, measurement_sets=[]
+        )
+
+    if len(ms_list) < 5:
+        raise HTTPException(
+            400,
+            f"Sample {sample_id} has only {len(ms_list)} completed measurement sets; "
+            "at least 5 are required to detect outliers",
+        )
+
+    if any(ms.outlier_sensors for ms in ms_list):
+        raise HTTPException(
+            400,
+            f"Sample {sample_id} already has measurement sets labeled as outliers; "
+            "re-running detect-outliers is not allowed",
+        )
+
+    sensor_map = await _get_sensor_map(session)
+    sensor_id_by_name = {name: sid for sid, name in sensor_map.items()}
+
+    stable_means = await _compute_stable_means(
+        session, [sample_id], is_stable=True, subtract_base=True
+    )
+    means_by_ms: dict[int, dict[str, float | None]] = {
+        ms_means.measurement_set_id: {sm.sensor: sm.mean for sm in ms_means.means}
+        for s in stable_means
+        for ms_means in s.measurement_sets
+    }
+
+    import numpy as np
+
+    deltas_by_sensor: dict[str, list[float]] = {}
+    for ms in ms_list:
+        for sensor_name, value in means_by_ms.get(ms.id, {}).items():
+            if value is not None:
+                deltas_by_sensor.setdefault(sensor_name, []).append(value)
+
+    bounds: dict[str, tuple[float, float]] = {}
+    for sensor_name, values in deltas_by_sensor.items():
+        q1, q3 = np.percentile(values, [25, 75])
+        iqr = q3 - q1
+        bounds[sensor_name] = (q1 - 1.5 * iqr, q3 + 1.5 * iqr)
+
+    result: list[MeasurementSetOutliers] = []
+    for ms in ms_list:
+        outlier_names = sorted(
+            sensor_name
+            for sensor_name, value in means_by_ms.get(ms.id, {}).items()
+            if value is not None
+            and not (bounds[sensor_name][0] <= value <= bounds[sensor_name][1])
+        )
+        ms.outlier_sensors = sorted(sensor_id_by_name[name] for name in outlier_names)
+        session.add(ms)
+        result.append(
+            MeasurementSetOutliers(
+                measurement_set_id=ms.id,
+                repetition_number=ms.repetition_number,
+                outlier_sensors=outlier_names,
+            )
+        )
+
+    await session.commit()
+
+    return SampleOutliersResponse(
+        sample_id=sample_id, sample_name=sample.name, measurement_sets=result
     )
