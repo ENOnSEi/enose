@@ -8,7 +8,6 @@ de build_pipeline() sin tocar el resto del flujo.
 """
 
 import pickle
-import re
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -22,26 +21,22 @@ from sklearn.metrics import (
 )
 from sklearn.base import clone
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold, cross_val_predict
+from sklearn.model_selection import (
+    GridSearchCV, StratifiedGroupKFold, cross_val_predict, cross_val_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 from enose.config import (
-    CLASSIFIER, DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, FILENAME_COLUMN,
-    GRID_PARAMS, LABEL_COLUMN, ML_CONFIG, NON_FEATURE_COLUMNS, PCA_CONFIG,
+    CLASSIFIER, DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, GRID_PARAMS,
+    GROUP_BY, LABEL_COLUMN, ML_CONFIG, NON_FEATURE_COLUMNS, PCA_CONFIG,
 )
 from enose.features.perkey_pca import PerKeyPCA
-from enose.pipeline.dataset import load_dataset, validate_dataset
+from enose.pipeline.dataset import derive_groups, load_dataset, validate_dataset
 from enose.utils import create_output_directory, print_data_summary, setup_logging
 
 logger = setup_logging(__name__)
-
-# Cada grabación (un CSV) es la unidad de grupo: si más adelante se ventanea la
-# fase 'medicion' para generar varias muestras por grabación, todas comparten el
-# nombre del CSV con un sufijo '#wNN'. Quitar ese sufijo agrupa las ventanas de
-# la misma grabación y evita que caigan a la vez en train y test (fuga por grupos).
-WINDOW_SUFFIX = re.compile(r"#w\d+$", re.IGNORECASE)
 
 
 class ModelTrainer:
@@ -89,33 +84,37 @@ class ModelTrainer:
         try:
             self.X = self.df.drop(columns=[c for c in NON_FEATURE_COLUMNS if c in self.df.columns])
             self.y = self.df[LABEL_COLUMN]
-            self.groups = self._derive_groups()
+            self.groups = derive_groups(self.df, GROUP_BY)
 
             n_groups = pd.Series(self.groups).nunique()
             self.n_groups = int(n_groups)
             logger.info(f"Features: {self.X.shape[1]} | Muestras: {self.X.shape[0]} | "
-                        f"Clases: {self.y.nunique()} | Grupos (grabación): {n_groups}")
+                        f"Clases: {self.y.nunique()} | Grupos ({GROUP_BY}): {n_groups}")
             if n_groups < self.X.shape[0]:
-                logger.info("Se usará validación por grupos: ninguna ventana de la misma "
-                            "grabación estará a la vez en train y test.")
+                logger.info("Se usará validación por grupos: ninguna fila de un mismo grupo "
+                            "estará a la vez en train y test.")
             return True
         except Exception as e:
             logger.error(f"Error preparando features: {e}")
             return False
 
-    def _derive_groups(self) -> np.ndarray:
-        """
-        Id de grupo (grabación) por muestra, derivado de 'Nombre_Archivo' quitando
-        el sufijo de ventana '#wNN'. Si no hay nombres de archivo, cada muestra es
-        su propio grupo (equivale a un split sin agrupar).
-        """
-        if FILENAME_COLUMN not in self.df.columns:
-            logger.warning(f"Sin columna '{FILENAME_COLUMN}': no se puede agrupar por grabación. "
-                           "Cada muestra será su propio grupo.")
-            return np.arange(len(self.df))
-        return self.df[FILENAME_COLUMN].apply(
-            lambda name: WINDOW_SUFFIX.sub("", str(name))
-        ).to_numpy()
+    def _log_insufficient_groups(self) -> None:
+        per_class = (
+            pd.DataFrame({"y": self.y.to_numpy(), "g": self.groups})
+            .drop_duplicates("g").groupby("y")["g"].count()
+        )
+        short = per_class[per_class < 2]
+        logger.error(
+            f"Grupos insuficientes con GROUP_BY='{GROUP_BY}': cada clase necesita ≥2 grupos "
+            f"distintos para validar sin fuga. Clases con 1 solo grupo: {sorted(short.index.tolist())}."
+        )
+        if GROUP_BY == "sample":
+            logger.error(
+                "Solución: medir cada sustancia en ≥2 Samples distintos (idealmente en días "
+                "distintos). Con un solo Sample por sustancia no es posible estimar si el modelo "
+                "generaliza a otra tanda. Para reproducir la cifra antigua (optimista) usa "
+                "GROUP_BY='recording' en config.py."
+            )
 
     def split_data(self, test_size: float = 0.2, random_state: int = 42) -> bool:
         try:
@@ -128,8 +127,7 @@ class ModelTrainer:
             # ~1/test_size folds → primer fold como test, acotado por los grupos disponibles.
             n_splits = min(max(round(1 / test_size), 2), int(min_groups_per_class))
             if n_splits < 2:
-                logger.error("Insuficientes grupos por clase para un split por grupos "
-                             "(se requieren ≥2 grabaciones en la clase más pequeña).")
+                self._log_insufficient_groups()
                 return False
 
             sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
@@ -148,7 +146,7 @@ class ModelTrainer:
             }
             logger.info(f"Split por grupos ({n_splits} folds -> test ~{100/n_splits:.0f}%): "
                         f"Train {len(self.X_train)} muestras / Test {len(self.X_test)} muestras "
-                        f"({n_test_groups} grabaciones en test, disjuntas de train)")
+                        f"({n_test_groups} grupos en test, disjuntos de train)")
             return True
         except Exception as e:
             logger.error(f"Error dividiendo datos: {e}")
@@ -237,7 +235,7 @@ class ModelTrainer:
                 logger.info("Búsqueda completada (evaluación sólo-CV, out-of-fold)")
                 return True
 
-            logger.error("No se pudo ajustar el modelo: grupos insuficientes por clase.")
+            self._log_insufficient_groups()
             return False
         except Exception as e:
             logger.error(f"Error en GridSearchCV: {e}", exc_info=True)
@@ -293,12 +291,53 @@ class ModelTrainer:
                 "y_test": self.y_test.values,
                 "y_pred": y_pred,
                 "best_model": best,
+                "group_by": GROUP_BY,
+                **self._grouping_comparison(),
             }
             self._generate_visualizations(best, acc_train, acc_test, cm, y_pred)
             return True
         except Exception as e:
             logger.error(f"Error en evaluación: {e}")
             return False
+
+    def _grouping_comparison(self) -> Dict:
+        """CV con los mejores hiperparámetros sobre todo el dataset, dos veces y con
+        los mismos folds: agrupando por self.groups (honesta) y con cada fila como su
+        propio grupo (reps de una misma tanda repartidas entre train y test). La
+        diferencia es cuánto infla la accuracy mezclar reps de la misma tanda."""
+        if pd.Series(self.groups).nunique() == len(self.groups):
+            return {}  # cada fila ya es su propio grupo: no hay nada que comparar
+        try:
+            per_class = (
+                pd.DataFrame({"y": self.y.to_numpy(), "g": self.groups})
+                .drop_duplicates("g").groupby("y")["g"].count().min()
+            )
+            n_splits = min(ML_CONFIG.n_splits_cv, int(per_class))
+            if n_splits < 2:
+                return {}
+            est = clone(self.pipeline).set_params(**self.grid_search.best_params_)
+            cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            scores = {}
+            for key, groups in (("grouped", self.groups), ("per_row", np.arange(len(self.y)))):
+                scores[key] = float(np.mean(cross_val_score(
+                    est, self.X, self.y, groups=groups, cv=cv,
+                    scoring=ML_CONFIG.scoring_metric, n_jobs=ML_CONFIG.n_jobs,
+                )))
+            inflation = scores["per_row"] - scores["grouped"]
+            logger.info(
+                f"{ML_CONFIG.scoring_metric} ({n_splits} folds, todo el dataset): "
+                f"agrupando por {GROUP_BY} = {scores['grouped']*100:.1f}% | "
+                f"por fila (reps mezcladas) = {scores['per_row']*100:.1f}% | "
+                f"inflado = {inflation*100:+.1f} pp"
+            )
+            return {
+                "cv_score_grouped": scores["grouped"],
+                "cv_score_per_row": scores["per_row"],
+                "cv_inflation": inflation,
+            }
+        except Exception as e:
+            logger.warning(f"No se pudo calcular la comparación de agrupaciones: {e}")
+            return {}
 
     def save_model(self, output_dir: Path = DATA_PROCESSED_DIR) -> bool:
         try:

@@ -26,14 +26,15 @@ troceo y se invoca solo si ``MEASUREMENT_WINDOWING`` deja de ser ``None``.
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import re
 import sys
 
 import numpy as np
 import pandas as pd
 
 from enose.config import (
-    DATA_PROCESSED_DIR, DATA_RAW_DIR, DATASET_MAESTRO_PATH,
-    FEATURE_MODE, FILENAME_COLUMN, LABEL_COLUMN, NON_FEATURE_COLUMNS, SENSOR_COLUMNS,
+    DATA_PROCESSED_DIR, DATA_RAW_DIR, DATASET_MAESTRO_PATH, FEATURE_MODE, FILENAME_COLUMN,
+    GROUP_BY, GROUP_COLUMN, LABEL_COLUMN, NON_FEATURE_COLUMNS, SENSOR_COLUMNS,
 )
 from enose.features.handcrafted import HandcraftedExtractor
 from enose.features.perkey_pca import SEGMENT_COL_SEP
@@ -53,6 +54,10 @@ logger = setup_logging(__name__)
 # Desactivado por defecto (una grabación = una muestra). Para activarlo, pon una
 # tupla (longitud_ventana_seg, solapamiento_0a1), p. ej. (10.0, 0.5).
 MEASUREMENT_WINDOWING: Optional[Tuple[float, float]] = None
+
+# Sufijo de ventana que se añade a 'Nombre_Archivo' al ventanear una grabación
+# ('#wNN'). Quitarlo agrupa todas las ventanas de la misma grabación.
+WINDOW_SUFFIX = re.compile(r"#w\d+$", re.IGNORECASE)
 
 
 class DatasetGenerator:
@@ -317,6 +322,31 @@ def validate_dataset(df: pd.DataFrame) -> Tuple[bool, List[str]]:
         issues.append(f"Columnas con NaN: {null_cols}")
 
     return len(issues) == 0, issues
+
+
+def derive_groups(df: pd.DataFrame, group_by: str = GROUP_BY) -> np.ndarray:
+    """Id de grupo por fila para la validación cruzada por grupos.
+
+    - ``group_by='sample'`` y el dataset trae ``GROUP_COLUMN``: se usa tal cual
+      (todas las reps de un Sample comparten grupo).
+    - En otro caso, grupo = grabación: 'Nombre_Archivo' sin el sufijo de ventana
+      '#wNN', de modo que las ventanas de una misma grabación no se separan.
+    - Sin 'Nombre_Archivo', cada fila es su propio grupo.
+    """
+    if group_by not in {"sample", "recording"}:
+        raise ValueError(f"GROUP_BY desconocido: '{group_by}' (usa 'sample' o 'recording')")
+
+    if group_by == "sample":
+        if GROUP_COLUMN in df.columns:
+            return df[GROUP_COLUMN].astype(str).to_numpy()
+        logger.warning(f"GROUP_BY='sample' pero el dataset no tiene columna '{GROUP_COLUMN}' "
+                       "(CSV legacy o dataset antiguo): se agrupa por grabación.")
+
+    if FILENAME_COLUMN not in df.columns:
+        logger.warning(f"Sin columna '{FILENAME_COLUMN}': no se puede agrupar. "
+                       "Cada muestra será su propio grupo.")
+        return np.arange(len(df))
+    return df[FILENAME_COLUMN].apply(lambda name: WINDOW_SUFFIX.sub("", str(name))).to_numpy()
 
 
 def load_dataset(path: Path) -> Optional[pd.DataFrame]:

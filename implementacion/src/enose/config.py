@@ -105,7 +105,22 @@ SUBSTANCE_LABELS: Dict[str, str] = {
 # Nombres de las columnas no-feature del dataset maestro.
 FILENAME_COLUMN = "Nombre_Archivo"
 LABEL_COLUMN = "Etiqueta"
-NON_FEATURE_COLUMNS = {FILENAME_COLUMN, LABEL_COLUMN}
+# Unidad de agrupación para la validación cruzada (p. ej. "sample_12"). La
+# rellena train_from_api.py con el Sample de la API; los CSV legacy no la tienen.
+GROUP_COLUMN = "Grupo"
+NON_FEATURE_COLUMNS = {FILENAME_COLUMN, LABEL_COLUMN, GROUP_COLUMN}
+
+# Qué se considera "la misma medición" al partir train/test. Todas las filas de
+# un mismo grupo caen siempre en el mismo lado del split.
+#   'sample'    : grupo = Sample de la API (todas sus reps juntas). Las reps de
+#                 una tanda comparten día, deriva y humedad; separarlas entre
+#                 train y test infla la accuracy (mide repetibilidad, no
+#                 generalización). Es el modo honesto y el por defecto.
+#   'recording' : grupo = cada grabación/rep por separado (comportamiento
+#                 anterior). Solo para comparar: da una cifra optimista.
+# Si el dataset no trae GROUP_COLUMN (CSV legacy), 'sample' cae a 'recording':
+# allí cada CSV es a la vez una grabación y una tanda.
+GROUP_BY: Literal["sample", "recording"] = "sample"
 
 
 # ---------------------------------------------------------------------------

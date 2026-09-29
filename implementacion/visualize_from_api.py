@@ -228,7 +228,7 @@ def plot_feature_heatmap(dataset_path: Path, out_dir: Path):
     df = pd.read_csv(dataset_path)
     label_col = "Etiqueta"
     fname_col = "Nombre_Archivo"
-    non_feat = {label_col, fname_col}
+    non_feat = {label_col, fname_col, "Grupo"}
     feat_cols = [c for c in df.columns if c not in non_feat]
 
     labels = df[label_col].values
@@ -253,7 +253,7 @@ def plot_pca_projection(dataset_path: Path, out_dir: Path):
     df = pd.read_csv(dataset_path)
     label_col = "Etiqueta"
     fname_col = "Nombre_Archivo"
-    non_feat = {label_col, fname_col}
+    non_feat = {label_col, fname_col, "Grupo"}
     feat_cols = [c for c in df.columns if c not in non_feat]
 
     X = df[feat_cols].values
@@ -291,7 +291,7 @@ def plot_pca_3components(dataset_path: Path, out_dir: Path):
     df = pd.read_csv(dataset_path)
     label_col = "Etiqueta"
     fname_col = "Nombre_Archivo"
-    non_feat = {label_col, fname_col}
+    non_feat = {label_col, fname_col, "Grupo"}
     feat_cols = [c for c in df.columns if c not in non_feat]
 
     X = StandardScaler().fit_transform(df[feat_cols].values)
@@ -380,7 +380,7 @@ def plot_sensor_response_profile(groups: dict, processor: SignalProcessor, out_d
 def plot_correlation_matrix(dataset_path: Path, out_dir: Path):
     """Correlation matrix between the 36 features."""
     df = pd.read_csv(dataset_path)
-    non_feat = {"Etiqueta", "Nombre_Archivo"}
+    non_feat = {"Etiqueta", "Nombre_Archivo", "Grupo"}
     feat_cols = [c for c in df.columns if c not in non_feat]
 
     corr = df[feat_cols].corr()

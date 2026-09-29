@@ -2,7 +2,7 @@
 Harness de comparación de modelos de clasificación.
 
 Corre varios clasificadores sobre el MISMO `dataset_maestro.csv`, con la MISMA
-validación que el pipeline (StratifiedGroupKFold agrupando por grabación,
+validación que el pipeline (StratifiedGroupKFold agrupando según GROUP_BY,
 métrica balanced_accuracy), y saca un leaderboard ordenado.
 
 Cada modelo va dentro de un Pipeline(StandardScaler → estimador) y se le da una
@@ -21,7 +21,6 @@ de 1 std del mejor: entre esos, elige el más simple (Occam).
 """
 
 import argparse
-import re
 import sys
 import warnings
 from pathlib import Path
@@ -43,13 +42,10 @@ from sklearn.svm import SVC
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from enose.config import (
-    DATASET_MAESTRO_PATH, FILENAME_COLUMN, LABEL_COLUMN, NON_FEATURE_COLUMNS,
-)
+from enose.config import DATASET_MAESTRO_PATH, GROUP_BY, LABEL_COLUMN, NON_FEATURE_COLUMNS
+from enose.pipeline.dataset import derive_groups
 
 warnings.filterwarnings("ignore")  # silencia convergencia/colinealidad en n pequeño
-
-WINDOW_SUFFIX = re.compile(r"#w\d+$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +122,7 @@ def load_xy_groups(dataset_path: Path):
     feature_cols = [c for c in df.columns if c not in NON_FEATURE_COLUMNS]
     X = df[feature_cols].fillna(0.0)
     y = df[LABEL_COLUMN]
-    if FILENAME_COLUMN in df.columns:
-        groups = df[FILENAME_COLUMN].apply(lambda n: WINDOW_SUFFIX.sub("", str(n))).to_numpy()
-    else:
-        groups = np.arange(len(df))
+    groups = derive_groups(df, GROUP_BY)  # misma agrupación que el ModelTrainer
     return X, y, groups
 
 
@@ -178,7 +171,7 @@ def main():
     print("=" * 64)
     print(f"  Dataset : {dataset_path.name}")
     print(f"  Muestras: {len(X)}  |  Features: {X.shape[1]}  |  Clases: {y.nunique()}")
-    print(f"  Grupos (grabaciones): {n_groups}  |  CV: {n_splits}-fold StratifiedGroupKFold")
+    print(f"  Grupos ({GROUP_BY}): {n_groups}  |  CV: {n_splits}-fold StratifiedGroupKFold")
     print(f"  Métrica : balanced_accuracy (media ± std de los folds)")
     print("=" * 64)
 

@@ -17,7 +17,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from enose.config import (
-    DATASET_MAESTRO_PATH, FILENAME_COLUMN, LABEL_COLUMN, DATA_PROCESSED_DIR,
+    DATASET_MAESTRO_PATH, FILENAME_COLUMN, GROUP_COLUMN, LABEL_COLUMN, NON_FEATURE_COLUMNS,
+    DATA_PROCESSED_DIR,
 )
 from enose.features.handcrafted import HandcraftedExtractor
 from enose.io.api import DEFAULT_API, fetch_recordings, recording_to_features
@@ -44,6 +45,9 @@ def build_dataset(recordings: list[dict]) -> pd.DataFrame:
         row = {
             FILENAME_COLUMN: f"{sample_name}_rep{rep}_ms{ms_id}",
             LABEL_COLUMN: sample_name,
+            # todas las reps de un Sample comparten grupo: en la CV caen juntas
+            # en train o en test (ver GROUP_BY en config.py)
+            GROUP_COLUMN: f"sample_{rec['sample_id']}",
             **features,
         }
         rows.append(row)
@@ -53,7 +57,7 @@ def build_dataset(recordings: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    feature_cols = [c for c in df.columns if c not in {FILENAME_COLUMN, LABEL_COLUMN}]
+    feature_cols = [c for c in df.columns if c not in NON_FEATURE_COLUMNS]
     df[feature_cols] = df[feature_cols].fillna(0.0)
     return df
 
@@ -90,6 +94,7 @@ def main():
     df.to_csv(DATASET_MAESTRO_PATH, index=False)
     logger.info(f"Dataset: {df.shape[0]} samples × {df.shape[1]} columns")
     logger.info(f"Classes: {df[LABEL_COLUMN].value_counts().to_dict()}")
+    logger.info(f"Samples por clase: {df.groupby(LABEL_COLUMN)[GROUP_COLUMN].nunique().to_dict()}")
     logger.info(f"Saved to: {DATASET_MAESTRO_PATH}")
 
     if args.dataset_only:
