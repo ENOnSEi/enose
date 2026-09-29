@@ -1,117 +1,138 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guía para Claude Code en este repo. Objetivo: no tener que volver a recorrer el proyecto. Si algo de aquí contradice al código, manda el código — y actualiza este fichero.
 
-## Repository structure
+## Qué es
 
-This is a multi-component project for an electronic nose (4 TGS gas sensors):
+Nariz electrónica con **4 sensores de gas TGS (Figaro)**: `tgs2620` (col. `v20`), `tgs2611` (`v11`), `tgs2602` (`v02`), `tgs2600` (`v00`). Una ESP32-S3 lee los ADC y conmuta dos relés (aire limpio / muestra). Una API FastAPI captura las lecturas en Postgres, un *observer* automatiza el ciclo base→medición→cooldown, y un pipeline offline de ML clasifica sustancias. Repo GitHub: `ENOnSEi/enose`, rama `main`, flujo con PRs. Docs y comentarios mayoritariamente en español.
 
-| Folder | What it is |
-|---|---|
-| `api/` | FastAPI backend — data acquisition, real-time observer, REST API |
-| `esp32s3/` | Arduino firmware for the ESP32-S3 board (WebSocket server, reads ADC, controls relays) |
-| `implementacion/` | Offline ML pipeline — signal processing, feature extraction, SVM classifier |
-| `datasets/` | Raw CSV recordings used for ML training and observer calibration |
-| `serial-reader/` | Legacy serial CSV recorder (superseded by the WebSocket-based `api/`) |
+| Carpeta | Estado | Qué es |
+|---|---|---|
+| `api/` | **activo** | Backend FastAPI (Python ≥3.13, `uv`). Adquisición, observer, export, estadísticas, PCA, outliers |
+| `esp32s3/` | **activo** | Firmware PlatformIO (`src/main.cpp`, MQTT). `websockets-read.ino` = firmware WS legacy, solo referencia |
+| `implementacion/` | activo | Pipeline ML offline (features handcrafted + LDA/SVM). Lee CSVs de `datasets/` o la API vía `/export/recordings` |
+| `datasets/` | datos | 6 CSV legacy: agua, alcohol, caldo_gambas, vino, vinoyagua, vinoagitacionrara (=vino+alcohol) |
+| `mosquitto/` | infra | Config del broker (anónimo, puerto 1883) |
+| `analog-reader-arduino/`, `serial-reader/` | **legacy** | Arduino por serie a 4 Hz + grabador CSV. No tocar salvo petición |
+| raíz | | `Makefile`, `compose.yml` (podman), `SPEC_DESIGN_DEV.md`, `README.md` |
 
-## API commands (run from `api/`)
+Ficheros ruido en raíz (ignorar): `package.json`/`package-lock.json` (instalan claude-code), `skills-lock.json`, `.claude/AhorrarTokensClaude.md` (reglas de estilo del usuario: respuestas cortas, Edit en vez de Write, no releer, soluciones mínimas, paralelizar tool calls).
+
+## Comandos (desde la raíz, vía Makefile)
 
 ```bash
-uv run uvicorn main:app --reload        # start dev server
-uv run python tests/test_analyzer.py   # run analyzer tests (no DB or board needed)
-python tools/calibrate.py               # calibrate slope threshold against datasets/
+make up / up-build / down / down-v / logs   # stack podman: db (postgres:16) + mosquitto + api
+make api-dev        # uv --directory api run uvicorn main:app --reload
+make api-test       # uv run python tests/test_analyzer.py  (sin BD ni placa)
+make api-calibrate  # uv run python tools/calibrate.py (umbral de pendiente vs datasets/)
+make esp-build / esp-upload / esp-monitor   # pio run -d esp32s3
+make mqtt-ping / mqtt-readings / mqtt-commands / mqtt-fake-reading   # requiere mosquitto-clients
+make run-start NAME=x N=3 MIN=30 / run-stop / run-status              # curl a la API
 ```
 
-API docs available at `http://localhost:8000/docs` once running.
+El usuario está en **Windows** (PowerShell + Git Bash); `make`, `podman` y `mosquitto_*` pueden no estar disponibles → usar los comandos equivalentes (`uv --directory api ...`). Swagger: `http://localhost:8000/docs`. CLI interactivo: `python api/cli.py`. Debug en VS Code: `.vscode/launch.json` (rutas de venv estilo Linux).
 
-## API architecture
+ML: `cd implementacion && pip install -r requirements.txt && python main.py [--phase 4|5]`; tests `pytest` (testpaths=`pruebas`).
 
-The API is the active part of the system. Everything below runs from `api/`.
+## API (`api/`)
 
-### Startup (main.py)
+### Arranque (`main.py` lifespan)
+1. `create_all` (SQLModel) → `sync_schema_with_alembic` (`app/db/migrations_sync.py`): compara la revisión de la BD con el head de `migrations/versions/` y hace upgrade/downgrade automático; si no hay `alembic_version`, intenta upgrade y si falla hace `stamp head`. Pensado para cambiar de rama sin romper la BD.
+2. Siembra `sensor` desde `SENSOR_NAMES` → `sensor_cache {name: id}` (solo sensores con `retired_at IS NULL`).
+3. Lanza dos tareas permanentes: `_drain_to_db` y `Observer.run()`. Nada mide hasta `POST /serial/start`.
 
-On startup, the lifespan context:
-1. Creates DB tables (`SQLModel.metadata.create_all`)
-2. Seeds the `sensors` table from `SENSOR_NAMES` in `.env` (matched by name against ESP32 readings, not position; physical wiring lives only in firmware)
-3. Starts two permanent async background tasks: `_drain_to_db` and `Observer.run()`
+### Transporte con la placa
+`app/services/board.py` es una fachada: `BOARD_TRANSPORT=mqtt` (por defecto, `board_mqtt.py`, paho-mqtt) o `ws` (`board_ws.py`, legacy, conecta a `ESP32_WS_URL`). Interfaz común thread-safe: `start(sensor_names)`, `stop()`, `set_estado(e)`, `get_status()`, `drain()`. El cliente MQTT solo se conecta al hacer `start` y se desconecta en `stop`.
 
-The observer and drain run for the lifetime of the process. No measurement is active until `POST /serial/start` is called.
+Protocolo (idéntico en WS y MQTT):
+- ESP32 → `enose/readings`: `{"type":"reading","arduino_ms":N,"values":{"tgs2620":N,"tgs2611":N,"tgs2602":N,"tgs2600":N}}` cada 200 ms (5 Hz).
+- API → `enose/commands`: `{"type":"command","estado":"base|medicion|cooldown"}` o `{"type":"command","action":"stop"}`.
+- Las lecturas se emparejan **por nombre**, nunca por posición. Si falta algún sensor de `SENSOR_NAMES`, la lectura se descarta. El `estado` guardado es el que la API cree tener (`_estado`), no el que manda la placa.
 
-### Data flow
-
+### Flujo de datos
 ```
-ESP32-S3 (WebSocket :81)
-    │  JSON: {type:"reading", arduino_ms, values:{tgs2620:N, ...}}
-    ▼
-board_ws._connection_loop  (async task)
-    │  put_nowait → _queue (thread-safe Queue, maxsize=2000)
-    ▼
-_drain_to_db  (async task, polls every 0.5s)
-    │  INSERT Reading + ReadingValues; aborts on zero-value sensors
-    ▼
-PostgreSQL
-    │  SELECT last N readings (per ms_id)
-    ▼
-Observer  (async task, polls every OBSERVER_POLL_INTERVAL seconds)
-    │  feeds samples to SignalAnalyzer
-    ▼
-board_ws.set_estado() / .stop()  →  sends JSON command back to ESP32
+ESP32 ─MQTT─► board_mqtt._handle_message ─► Queue(maxsize 2000)
+  ─► _drain_to_db (cada 0.5 s): INSERT Reading + ReadingValue
+        · cualquier valor == 0 ⇒ board.stop() + cierra MS y Sample (fallo de sensor)
+        · copia is_stable y has_risen (por sensor) desde measurement_state
+  ─► Postgres ─► Observer (cada OBSERVER_POLL_INTERVAL) lee las últimas FETCH_LIMIT lecturas
+        ─► SignalAnalyzer ─► board.set_estado()/stop()
 ```
 
-### Shared mutable state
+### Estado compartido (singletons de módulo, sin DI)
+- `board_mqtt`/`board_ws`: conexión, cola, `_estado`, `_running`.
+- `measurement_state`: `sample_id`, `n_repetitions`, `ms_id` actual, `min_medicion_seconds`, `is_stable`, `sensor_risen`. Lo escribe el router en `/start` y el observer; lo leen drain y observer. `clear()` lo resetea.
 
-Three module-level singletons coordinate the layers — there is no DI container:
-
-- `board_ws` — WebSocket connection, reading queue, `_estado`, `_running`. All public functions are thread-safe.
-- `measurement_state` — active `sample_id`, `ms_id`, `n_repetitions`, `min_medicion_seconds`. Written by the router on `/start`, read by drain and observer.
-- `sensor_cache` — `{name: db_id}` dict, built at startup, read-only thereafter.
-
-### Observer state machine
-
-`Observer.run()` cycles through states: `start_base → waiting_base → measuring → cooldown → start_base`.
-
-Key invariant: the observer stops a `MeasurementSet` only when the signal has been **continuously stable** for at least `min_medicion_seconds` (not merely elapsed since measurement start). `stable_since` tracks the monotonic time when stability was first detected; any instability resets it to `None`.
-
-`min_medicion_seconds` is set per-run via `POST /serial/start?min_medicion_seconds=N` and stored in `measurement_state`. The default (30.0) is in `config.py` as `OBSERVER_MIN_MEDICION_SECONDS`.
+### Observer (`app/services/observer.py`)
+Máquina: `start_base → waiting_base → measuring → cooldown → start_base`.
+- `start_base`: rep += 1; crea MeasurementSet (la rep 1 la crea el router); `set_estado("base")`; `reset(require_rise=False)`.
+- `waiting_base`: ventana por `ms_id`; si estable → `medicion`, `reset(require_rise=True)`.
+- `measuring`: para cuando la señal lleva **estable de forma continua** ≥ `min_medicion_seconds` (`stable_since`; cualquier inestabilidad lo resetea). Cierra MS (espera hasta 10 s a que se vacíe la cola), `completed_repetitions += 1`. Si era la última rep: cierra Sample y `board.stop()`; si no → `cooldown`.
+- `cooldown`: ventana por `sample_id` + `estado='cooldown'`; al estabilizar → siguiente rep. No hay cooldown tras la última.
+- Si `running` pasa a False (stop manual o fallo) resetea todo.
+- Sin timeouts: si base o medición no estabilizan, espera indefinidamente (pendiente, ver `api/CONTEXT.md`).
 
 ### SignalAnalyzer (`app/services/analyzer.py`)
+FSM por canal, sin dependencias de BD. Pendiente por mínimos cuadrados (u/s) sobre los últimos `OBSERVER_WINDOW_SECONDS` de tiempo de señal (`arduino_ms`, no reloj de pared). Histéresis: `lower = thr·(1−h)`, `upper = thr·(1+h)` sobre `|pendiente|`. Debounce `OBSERVER_CONFIRM_SECONDS`. Latch `require_rise`: en medición un canal no puede estabilizarse sin haber superado antes `upper` (`has_risen`). Combinación multi-sensor con `OBSERVER_POLICY` = `all|any|majority`. Umbral 7.5 u/s calibrado contra `datasets/` (meseta máx ~5.3, subida mínima ~9.7; rango factible ~6.2–8.4). Recalibrar si cambian sensores o se añaden grabaciones.
 
-Stateful per-channel FSM. Decides SUBIENDO vs ESTABILIZADO using:
-- Least-squares slope over a sliding `OBSERVER_WINDOW_SECONDS` window
-- Hysteresis band (`lower`/`upper` around `OBSERVER_SLOPE_THRESHOLD`)
-- Temporal debounce (`OBSERVER_CONFIRM_SECONDS`, measured in signal time, not wall time)
-- `require_rise` latch: in `medicion` mode, a channel can only confirm ESTABILIZADO after having first risen above `upper`. Prevents false-positive stop when measurement starts flat.
-
-Call `reset(require_rise=False)` for base/cooldown phases, `reset(require_rise=True)` for measuring.
-
-### Database schema
-
+### Esquema de BD (SQLModel, Postgres, asyncpg)
 ```
-Sample (1) ──< MeasurementSet (1) ──< Reading (1) ──< ReadingValue
-                                                          └── Sensor
+Sample 1─< MeasurementSet 1─< Reading 1─< ReadingValue >─1 Sensor
+Sample 1─< Reading   (Reading.sample_id; cooldown tiene measurement_set_id NULL)
 ```
+- `sample`: `name` (repetible), `n_repetitions` (1–10), `completed_repetitions` (solo lo incrementa el observer al cerrar una rep de forma natural), `started_at`, `stopped_at`.
+- `measurementset`: `sample_id`, `repetition_number` (1-based), `started_at`, `stopped_at` (NULL ⇒ incompleto, descartar), `outlier_sensors int[]` (ids de sensor marcados outlier).
+- `reading`: `sample_id`, `measurement_set_id`, `arduino_ms` (bigint), `estado` (`base|medicion|cooldown`), `is_stable`, `captured_at`.
+- `readingvalue`: PK (`reading_id`, `sensor_id`), `value` int, `has_risen`.
+- `sensor`: `name` único, `created_at`, `retired_at`. El cableado (pines ADC) vive **solo** en el firmware.
+- "Sample completo de verdad" = `completed_repetitions == n_repetitions AND stopped_at IS NOT NULL` (un `/serial/stop` manual también pone `stopped_at` en el MS en curso).
 
-- `Sample`: one substance measurement session. `completed_repetitions` < `n_repetitions` means it was interrupted.
-- `MeasurementSet`: one base→medicion cycle. `stopped_at = NULL` means incomplete (discard for ML).
-- `Reading`: one poll from the board (all sensors together). `estado` = `base` | `medicion` | `cooldown`. Cooldown readings have `measurement_set_id = NULL`.
-- `ReadingValue`: one sensor value per reading.
+Migraciones Alembic (`api/migrations/versions/`): `0553fd37cd2d` (sensor: quita `pin`, añade `created_at`/`retired_at`) → `6c0cde90f026` (measurementset.`outlier_sensors`). Al cambiar un modelo: crear migración con `uv run alembic revision --autogenerate -m "..."` desde `api/` (el arranque las aplica solo).
 
-### Observer calibration
+### Endpoints
+| Router | Endpoint | Qué hace |
+|---|---|---|
+| serial | `GET /serial/status` | estado de conexión/cola |
+| | `POST /serial/start?name&n_repetitions(1-10)&min_medicion_seconds(30)` | crea Sample + MS rep 1, arranca placa. 400 si ya corre |
+| | `POST /serial/stop` | para placa; en background espera cola y cierra MS/Sample |
+| | `PUT /serial/estado/{base\|medicion\|cooldown}` | forzar estado — **solo pruebas** |
+| sensors | `POST /sensors/{name}/rename {archive_as}` | sustitución física: archiva la fila (retired_at) y crea una nueva con el nombre original |
+| export | `GET /export/samples?name&only_fully_complete` | lista (búsqueda parcial ilike por nombre) |
+| | `GET /export/samples/{id}` | detalle + MS |
+| | `GET /export/recordings?sample_id&only_complete` · `/export/recordings/{ms_id}` | MS pivotados a filas `data,v20,v11,v02,v00,estado,is_stable` (sin cooldown). Lo consume el ML |
+| | `GET /export/readings?sample_ids&ms_ids&only_complete&estado&is_stable&has_risen&subtract_base` | export filtrado por reglas de negocio |
+| | `GET /export/stable-means[/chart]?sample_ids&is_stable&subtract_base` | media por sensor de la medición por MS (JSON o PNG) |
+| | `GET /export/pca[/chart]?sample_ids(≥2)&min_repetitions(3)&is_stable&subtract_base` | PCA 2D: observación = muestra, variable = sensor × posición ordinal de rep. Usa los **últimos** `min_repetitions` MS completos **sin outliers**; excluye muestras con menos (en `excluded_samples`) |
+| stats | `GET /measurement-sets/{id}/stats` · `GET /samples/{id}/stats` | min/max/media por fase, delta, diagnóstico (SNR, pendiente estimada, duración de transición) |
+| | `POST /samples/{id}/detect-outliers` | Tukey (Q1−1.5·IQR, Q3+1.5·IQR) sobre delta estable (medición−base) por sensor; persiste en `outlier_sensors`. Requiere ≥5 MS completos; 400 si ya etiquetado (no se re-ejecuta) |
+| | `GET /health` | |
 
-Run `python tools/calibrate.py` against `datasets/*.csv` to find the valid range for `OBSERVER_SLOPE_THRESHOLD`. The default 7.5 u/s is calibrated for the current 4-sensor set: above the highest plateau slope (~5.3 u/s) and below the weakest sensor's rise peak (~9.7 u/s). Recalibrate when new recordings are added.
+### Config (`app/core/config.py`, pydantic-settings, lee `api/.env`)
+Ver `api/.env.example`. Claves: `DATABASE_URL` (debe ser `postgresql+asyncpg://…`; para Neon `?ssl=require`, **no** `sslmode`), `BOARD_TRANSPORT`, `ESP32_WS_URL`, `MQTT_*` (topics `enose/readings`, `enose/commands`), `SENSOR_NAMES`, `OBSERVER_*` (WINDOW 4.0, THRESHOLD 7.5, HYSTERESIS 0.15, CONFIRM 1.0, POLICY all, FETCH_LIMIT 300, POLL 1.0, MIN_MEDICION 30.0). En compose, `DATABASE_URL`/`MQTT_BROKER_HOST` se sobrescriben con los nombres de servicio (`db`, `mosquitto`). `api/.env` no existe en local ahora mismo.
 
-### ESP32 firmware (`esp32s3/websockets-read.ino`)
+### Glosario / reglas de dominio
+`api/CONTEXT.md` es la fuente de verdad del dominio (Base, Medicion, Sample, MeasurementSet, Cooldown, validez tras crash, sustitución de sensor). Más teoría en `api/docs/` (matemática del analizador, patrón observer, teoría de e-nose). Nota: CONTEXT.md describe el criterio de stop como "30 s transcurridos + estable"; el código real exige **30 s de estabilidad continua**.
 
-Listens on WebSocket port 81. Receives JSON commands `{type:"command", estado:"base"|"medicion"}` and controls two relays (`medicionRelayPin=14`, `idleRelayPin=13`). Sends readings every 200 ms at 5 Hz. WiFi credentials are in `secrets.h` (gitignored).
+## Firmware ESP32-S3 (`esp32s3/`)
+PlatformIO, `env:esp32-s3-devkitc-1`, lib `PubSubClient`. `include/secrets.h` (gitignored, copiar de `secrets.h.example`): WiFi + IP del broker. Relés: `medicionRelayPin=14` (HIGH en medición), `idleRelayPin=13` (HIGH en el resto). ADC 12 bits. **Pines de sensor aún placeholders (`TODO`: 1, 2, 4, 5)**. El parseo de comandos es por `indexOf` de strings, no JSON real.
 
-## ML pipeline (`implementacion/`)
+## Pipeline ML (`implementacion/`)
+Arquitectura Spec → Design → Dev (`SPEC_DESIGN_DEV.md`): `spec/contracts/` (Protocols), `spec/schemas/` (Pydantic), `diseño/adr/` + `design/adr/` (ADRs), `src/enose/` (implementación). Scripts añaden `src` a `sys.path`.
+- Entrada legacy: CSV `data,v20,v11,v02,v00,estado` con fases `inicio` (descartar) / `base` (R0) / `medicion`. Etiqueta = nombre de fichero (`SUBSTANCE_LABELS` en `config.py`).
+- Señal: Savitzky-Golay (ventana 9, orden 3) + normalización fraccional `(R0 − Rs)/R0`. Ventanas temporales desde el inicio de medición: 0–5, 5–15, 15–40 s. `sampling_frequency=4.0` (heredado del Arduino a 4 Hz; la ESP32 va a 5 Hz — tenerlo en cuenta).
+- Features handcrafted: max, AUC, slope por sensor×ventana + ratios entre pares (`SENSOR_RATIO_PAIRS`) → ~60 features. Modo alternativo `FEATURE_MODE='pca_signal'` (PerKeyPCA).
+- Clasificador activo: `CLASSIFIER='lda'` (LDA con shrinkage, ganó en `compare_models.py`); `svm` disponible. `StandardScaler → clf`, GridSearchCV + StratifiedGroupKFold (grupo = grabación), métrica `balanced_accuracy`. Necesita ≥2 grabaciones por clase.
+- Desde la API (camino actual): `train_from_api.py [--sample-ids …]`, `predict_from_api.py --ms-id N | --sample-id N` (soft vote entre reps), `visualize_from_api.py`, `check_repeatability.py` (reps sospechosas por distancia en z-score). Punto único de extracción: `enose/io/api.py::recording_to_features` (mismo código en train e inferencia). Default API `http://127.0.0.1:8000`.
+- Salidas en `implementacion/datos/procesados/` (gitignored): `dataset_maestro.csv`, `best_model.pkl`, gráficas. Informes en `informes/`, logs en `registros/`.
 
-Offline pipeline; does not connect to the API. Input: `datasets/*.csv`. Output: trained SVM model.
+## Trampas conocidas
+- `config.py` tiene como default de `DATABASE_URL` una URL de Neon **con credenciales en claro** y formato libpq (`sslmode`, sin `+asyncpg`) que no funciona con asyncpg → siempre definir `DATABASE_URL` en `.env`. Conviene rotar esa contraseña y quitarla del código.
+- El export mapea nombre de sensor → columna `v20/v11/v02/v00` con un dict fijo (`_SENSOR_NAME_TO_COL` en `routers/export.py`); un sensor con otro nombre (p. ej. uno archivado) no aparece. `SENSOR_ID_TO_COL` allí no se usa.
+- `routers/measurement_sets.py` importa helpers privados de `routers/export.py` (`_compute_stable_means`, `_get_sensor_map`).
+- `api/README.md` está obsoleto (habla de puerto serie). `README.md` raíz y `esp32s3/README.md` sí reflejan MQTT.
+- `schemas/reading.py::SensorReadingOut` es legacy (columnas fijas v20…).
+- Lecturas con cualquier valor 0 abortan la medición entera.
+- En `_drain_to_db`, sensores de la lectura no presentes en `sensor_cache` se ignoran silenciosamente.
 
-```bash
-cd implementacion
-pip install -r requirements.txt
-python main.py --phase 4    # build master dataset from datasets/*.csv
-```
-
-Architecture follows Spec → Design → Dev: `spec/contracts/` has Python `Protocol` interfaces, `spec/schemas/` has Pydantic validation models, `src/enose/` has the implementations. Signal processing uses Savitzky-Golay smoothing and fractional baseline normalization `(R0 − Rs) / R0`.
+## Historial reciente (para contexto)
+PR #10 `outliers`: endpoint de detección de outliers + selector de MS para PCA y búsqueda por nombre. PR #9 `feature-bbdd-interface`: endpoints de export/stats. PR #8 `sensor-identity-cleanup`: Alembic + auto-reconciliación, rename de sensor, quitar `pin`. Antes: migración WS→MQTT, Makefile, compose con podman, PCA en la API. Ramas remotas: `fastapi-init`, `feature/model`, `joel`, `sensor-identity-cleanup`.
