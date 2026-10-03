@@ -93,6 +93,10 @@ Documentación interactiva en `http://localhost:8000/docs`.
 | GET | `/export/pca[/chart]` | PCA 2D entre Samples |
 | GET | `/measurement-sets/{id}/stats`, `/samples/{id}/stats` | Estadísticas y diagnóstico por fase |
 | POST | `/samples/{id}/detect-outliers?iqr_factor&min_reps&force` | Etiqueta reps outlier por sensor (Tukey); guarda método y fecha en `Sample.outlier_detection` |
+| GET | `/measurement-sets/{id}/chart?relative&include_cooldown` | PNG: curva de una rep con fases, tramos estables y fin de medición |
+| GET | `/samples/{id}/chart?only_complete&base_seconds` | PNG: reps superpuestas por sensor (outliers en rojo, incompletas en gris) |
+| GET | `/export/drift/chart?sample_ids&name&reps` | PNG: R0 (base estable) por Sample en orden cronológico, franjas por día |
+| GET | `/export/fingerprint/chart?sample_ids&normalize` | PNG: radar con la huella (medición−base)/base por sustancia |
 
 ## Arquitectura
 

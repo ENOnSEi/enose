@@ -105,6 +105,10 @@ Migraciones Alembic (`api/migrations/versions/`): `0553fd37cd2d` (sensor: quita 
 | | `GET /export/pca[/chart]?sample_ids(≥2)&min_repetitions(3)&is_stable&subtract_base` | PCA 2D: observación = muestra, variable = sensor × posición ordinal de rep. Usa los **últimos** `min_repetitions` MS completos **sin outliers**; excluye muestras con menos (en `excluded_samples`) |
 | stats | `GET /measurement-sets/{id}/stats` · `GET /samples/{id}/stats` | min/max/media por fase, delta, diagnóstico (SNR, pendiente estimada, duración de transición) |
 | | `POST /samples/{id}/detect-outliers?iqr_factor(1.5)&min_reps(5)&force(false)` | Tukey (Q1−k·IQR, Q3+k·IQR) sobre delta estable (medición−base) por sensor; persiste en `outlier_sensors` y método/parámetros/fecha en `sample.outlier_detection` (JSONB). 400 si hay menos de `min_reps` MS completos o si ya está etiquetado y no se pasa `force=true` |
+| charts | `GET /measurement-sets/{id}/chart` | PNG curva de una rep: fases, tramos `is_stable`, fin de medición; `relative` (resta base), `include_cooldown` |
+| | `GET /samples/{id}/chart` | PNG reps superpuestas por sensor, alineadas al inicio de medición y relativas a base; outlier rojo, incompleta gris |
+| | `GET /export/drift/chart?sample_ids&name&reps=first\|all` | PNG R0 (base estable) por Sample cronológico, franjas por día, color = sustancia |
+| | `GET /export/fingerprint/chart?sample_ids&normalize` | PNG radar (medición−base)/base medio por sustancia (+ cada Sample en fino) |
 | | `GET /health` | |
 
 ### Config (`app/core/config.py`, pydantic-settings, lee `api/.env`)
@@ -129,7 +133,7 @@ Arquitectura Spec → Design → Dev (`SPEC_DESIGN_DEV.md`): `spec/contracts/` (
 ## Trampas conocidas
 - `DATABASE_URL` es obligatoria (sin default en `config.py`): sin `api/.env` la API no arranca. La antigua URL de Neon con contraseña sigue en el historial de git (desde `d9e5a2c`) → hay que rotarla en Neon.
 - El export mapea nombre de sensor → columna `v20/v11/v02/v00` con un dict fijo (`_SENSOR_NAME_TO_COL` en `routers/export.py`); un sensor con otro nombre (p. ej. uno archivado) no aparece. `SENSOR_ID_TO_COL` allí no se usa.
-- `routers/measurement_sets.py` importa helpers privados de `routers/export.py` (`_compute_stable_means`, `_get_sensor_map`).
+- `routers/measurement_sets.py` y `routers/charts.py` importan helpers privados de `routers/export.py` (`_compute_stable_means`, `_get_sensor_map`, `_fetch_means_by_estado`, `_SENSOR_COLORS`).
 - `schemas/reading.py::SensorReadingOut` es legacy (columnas fijas v20…).
 - Lecturas con cualquier valor 0 abortan la medición entera.
 - En `_drain_to_db`, sensores de la lectura no presentes en `sensor_cache` se ignoran silenciosamente.

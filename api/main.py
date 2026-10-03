@@ -13,6 +13,7 @@ from app.models.measurement_set import MeasurementSet
 from app.models.reading import Reading, ReadingValue
 from app.models.sample import Sample
 from app.models.sensor import Sensor
+from app.routers.charts import router as charts_router
 from app.routers.export import router as export_router
 from app.routers.measurement_sets import router as measurement_sets_router
 from app.routers.sensors import router as sensors_router
@@ -135,6 +136,7 @@ app.include_router(serial_router)
 app.include_router(measurement_sets_router)
 app.include_router(export_router)
 app.include_router(sensors_router)
+app.include_router(charts_router)
 
 
 @app.get("/health")
