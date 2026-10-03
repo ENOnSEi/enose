@@ -80,14 +80,14 @@ FSM por canal, sin dependencias de BD. Pendiente por mínimos cuadrados (u/s) so
 Sample 1─< MeasurementSet 1─< Reading 1─< ReadingValue >─1 Sensor
 Sample 1─< Reading   (Reading.sample_id; cooldown tiene measurement_set_id NULL)
 ```
-- `sample`: `name` (repetible), `n_repetitions` (1–10), `completed_repetitions` (solo lo incrementa el observer al cerrar una rep de forma natural), `started_at`, `stopped_at`.
+- `sample`: `name` (repetible), `n_repetitions` (1–10), `completed_repetitions` (solo lo incrementa el observer al cerrar una rep de forma natural), `started_at`, `stopped_at`, `outlier_detection` (JSONB, NULL = nunca etiquetado).
 - `measurementset`: `sample_id`, `repetition_number` (1-based), `started_at`, `stopped_at` (NULL ⇒ incompleto, descartar), `outlier_sensors int[]` (ids de sensor marcados outlier).
 - `reading`: `sample_id`, `measurement_set_id`, `arduino_ms` (bigint), `estado` (`base|medicion|cooldown`), `is_stable`, `captured_at`.
 - `readingvalue`: PK (`reading_id`, `sensor_id`), `value` int, `has_risen`.
 - `sensor`: `name` único, `created_at`, `retired_at`. El cableado (pines ADC) vive **solo** en el firmware.
 - "Sample completo de verdad" = `completed_repetitions == n_repetitions AND stopped_at IS NOT NULL` (un `/serial/stop` manual también pone `stopped_at` en el MS en curso).
 
-Migraciones Alembic (`api/migrations/versions/`): `0553fd37cd2d` (sensor: quita `pin`, añade `created_at`/`retired_at`) → `6c0cde90f026` (measurementset.`outlier_sensors`). Al cambiar un modelo: crear migración con `uv run alembic revision --autogenerate -m "..."` desde `api/` (el arranque las aplica solo).
+Migraciones Alembic (`api/migrations/versions/`): `0553fd37cd2d` (sensor: quita `pin`, añade `created_at`/`retired_at`) → `6c0cde90f026` (measurementset.`outlier_sensors`) → `a3f1c9e2b7d4` (sample.`outlier_detection`). Una BD migrada por una rama más nueva sigue funcionando con código antiguo (columna nullable ignorada), pero el arranque avisa y no sincroniza. Al cambiar un modelo: crear migración con `uv run alembic revision --autogenerate -m "..."` desde `api/` (el arranque las aplica solo).
 
 ### Endpoints
 | Router | Endpoint | Qué hace |
@@ -104,14 +104,14 @@ Migraciones Alembic (`api/migrations/versions/`): `0553fd37cd2d` (sensor: quita 
 | | `GET /export/stable-means[/chart]?sample_ids&is_stable&subtract_base` | media por sensor de la medición por MS (JSON o PNG) |
 | | `GET /export/pca[/chart]?sample_ids(≥2)&min_repetitions(3)&is_stable&subtract_base` | PCA 2D: observación = muestra, variable = sensor × posición ordinal de rep. Usa los **últimos** `min_repetitions` MS completos **sin outliers**; excluye muestras con menos (en `excluded_samples`) |
 | stats | `GET /measurement-sets/{id}/stats` · `GET /samples/{id}/stats` | min/max/media por fase, delta, diagnóstico (SNR, pendiente estimada, duración de transición) |
-| | `POST /samples/{id}/detect-outliers` | Tukey (Q1−1.5·IQR, Q3+1.5·IQR) sobre delta estable (medición−base) por sensor; persiste en `outlier_sensors`. Requiere ≥5 MS completos; 400 si ya etiquetado (no se re-ejecuta) |
+| | `POST /samples/{id}/detect-outliers?iqr_factor(1.5)&min_reps(5)&force(false)` | Tukey (Q1−k·IQR, Q3+k·IQR) sobre delta estable (medición−base) por sensor; persiste en `outlier_sensors` y método/parámetros/fecha en `sample.outlier_detection` (JSONB). 400 si hay menos de `min_reps` MS completos o si ya está etiquetado y no se pasa `force=true` |
 | | `GET /health` | |
 
 ### Config (`app/core/config.py`, pydantic-settings, lee `api/.env`)
 Ver `api/.env.example`. Claves: `DATABASE_URL` (debe ser `postgresql+asyncpg://…`; para Neon `?ssl=require`, **no** `sslmode`), `BOARD_TRANSPORT`, `ESP32_WS_URL`, `MQTT_*` (topics `enose/readings`, `enose/commands`), `SENSOR_NAMES`, `OBSERVER_*` (WINDOW 4.0, THRESHOLD 7.5, HYSTERESIS 0.15, CONFIRM 1.0, POLICY all, FETCH_LIMIT 300, POLL 1.0, MIN_MEDICION 30.0). En compose, `DATABASE_URL`/`MQTT_BROKER_HOST` se sobrescriben con los nombres de servicio (`db`, `mosquitto`). `api/.env` no existe en local ahora mismo.
 
 ### Glosario / reglas de dominio
-`api/CONTEXT.md` es la fuente de verdad del dominio (Base, Medicion, Sample, MeasurementSet, Cooldown, validez tras crash, sustitución de sensor). Más teoría en `api/docs/` (matemática del analizador, patrón observer, teoría de e-nose). Nota: CONTEXT.md describe el criterio de stop como "30 s transcurridos + estable"; el código real exige **30 s de estabilidad continua**.
+`api/CONTEXT.md` es la fuente de verdad del dominio (Base, Medicion, Sample, MeasurementSet, Cooldown, validez tras crash, sustitución de sensor). Más teoría en `api/docs/` (matemática del analizador, patrón observer, teoría de e-nose). El criterio de stop es **30 s de estabilidad continua** (CONTEXT.md y api/README.md ya lo reflejan).
 
 ## Firmware ESP32-S3 (`esp32s3/`)
 PlatformIO, `env:esp32-s3-devkitc-1`, lib `PubSubClient`. `include/secrets.h` (gitignored, copiar de `secrets.h.example`): WiFi + IP del broker. Relés: `medicionRelayPin=14` (HIGH en medición), `idleRelayPin=13` (HIGH en el resto). ADC 12 bits. **Pines de sensor aún placeholders (`TODO`: 1, 2, 4, 5)**. El parseo de comandos es por `indexOf` de strings, no JSON real.
@@ -122,14 +122,14 @@ Arquitectura Spec → Design → Dev (`SPEC_DESIGN_DEV.md`): `spec/contracts/` (
 - Señal: Savitzky-Golay (ventana 9, orden 3) + normalización fraccional `(R0 − Rs)/R0`. Ventanas temporales desde el inicio de medición: 0–5, 5–15, 15–40 s. `sampling_frequency=4.0` (heredado del Arduino a 4 Hz; la ESP32 va a 5 Hz — tenerlo en cuenta).
 - Features handcrafted: max, AUC, slope por sensor×ventana + ratios entre pares (`SENSOR_RATIO_PAIRS`) → ~60 features. Modo alternativo `FEATURE_MODE='pca_signal'` (PerKeyPCA).
 - Clasificador activo: `CLASSIFIER='lda'` (LDA con shrinkage, ganó en `compare_models.py`); `svm` disponible. `StandardScaler → clf`, GridSearchCV + StratifiedGroupKFold, métrica `balanced_accuracy`. Grupo de CV según `GROUP_BY` (`config.py`): `'sample'` (defecto; columna `Grupo`=`sample_<id>` que escribe `train_from_api.py`, todas las reps de un Sample en el mismo lado del split) o `'recording'` (una rep = un grupo, cifra optimista). CSV legacy sin `Grupo` caen a `'recording'`. Lógica común en `pipeline/dataset.py::derive_groups`. El trainer reporta `cv_score_grouped` vs `cv_score_per_row` (`cv_inflation`) y falla con mensaje explicativo si una clase tiene un solo Sample → necesita ≥2 Samples por clase.
-- Desde la API (camino actual): `train_from_api.py [--sample-ids …]`, `predict_from_api.py --ms-id N | --sample-id N` (soft vote entre reps), `visualize_from_api.py`, `check_repeatability.py` (reps sospechosas por distancia en z-score), `confounder_test.py [--only-first-rep]` (entrena solo con features de la fase base y test de permutación por Sample: si acierta por encima del azar, el modelo aprende el día y no el olor; lógica en `enose/model/confounder.py`, salida `confounder_test.json`). Punto único de extracción: `enose/io/api.py::recording_to_features` (mismo código en train e inferencia). Default API `http://127.0.0.1:8000`.
-- Salidas en `implementacion/datos/procesados/` (gitignored): `dataset_maestro.csv`, `best_model.pkl`, gráficas. Informes en `informes/`, logs en `registros/`.
+- Desde la API (camino actual): `train_from_api.py [--sample-ids …]`, `predict_from_api.py --ms-id N | --sample-id N` (soft vote entre reps), `visualize_from_api.py`, `check_repeatability.py` (reps sospechosas por distancia en z-score), `reproducibility_report.py [--scale frac|delta]` (CV dentro/entre Samples, ICC de tanda, tendencia rep1→repN, CV de R0; lógica en `enose/report/reproducibility.py`, salida en `datos/procesados/reproducibilidad/`), `confounder_test.py [--only-first-rep]` (entrena solo con features de la fase base y test de permutación por Sample: si acierta por encima del azar, el modelo aprende el día y no el olor; lógica en `enose/model/confounder.py`, salida `confounder_test.json`). Punto único de extracción: `enose/io/api.py::recording_to_features` (mismo código en train e inferencia). Default API `http://127.0.0.1:8000`.
+- Salidas en `implementacion/datos/procesados/` (gitignored): `dataset_maestro.csv`, `best_model.pkl`, `model_card.json` (datos, ms_ids, hash, commit, config de features, métricas; `enose/model/model_card.py`), gráficas. `predict_from_api.py` lee la ficha y solo avisa si la config de features ha cambiado o falta.
+- Bug conocido: `predict_from_api.py --sample-id` falla con modelos de 2 clases (`get_scores` descarta el `decision_function` escalar del caso binario). Informes en `informes/`, logs en `registros/`.
 
 ## Trampas conocidas
 - `DATABASE_URL` es obligatoria (sin default en `config.py`): sin `api/.env` la API no arranca. La antigua URL de Neon con contraseña sigue en el historial de git (desde `d9e5a2c`) → hay que rotarla en Neon.
 - El export mapea nombre de sensor → columna `v20/v11/v02/v00` con un dict fijo (`_SENSOR_NAME_TO_COL` en `routers/export.py`); un sensor con otro nombre (p. ej. uno archivado) no aparece. `SENSOR_ID_TO_COL` allí no se usa.
 - `routers/measurement_sets.py` importa helpers privados de `routers/export.py` (`_compute_stable_means`, `_get_sensor_map`).
-- `api/README.md` está obsoleto (habla de puerto serie). `README.md` raíz y `esp32s3/README.md` sí reflejan MQTT.
 - `schemas/reading.py::SensorReadingOut` es legacy (columnas fijas v20…).
 - Lecturas con cualquier valor 0 abortan la medición entera.
 - En `_drain_to_db`, sensores de la lectura no presentes en `sensor_cache` se ignoran silenciosamente.

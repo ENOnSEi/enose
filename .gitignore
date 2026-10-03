@@ -226,3 +226,4 @@ __marimo__/
 esp32s3/secrets.h
 # Notas locales (no versionar)
 Obstáculos Reproducibilidad.odt
+.~lock.*#

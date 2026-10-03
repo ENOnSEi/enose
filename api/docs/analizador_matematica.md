@@ -13,7 +13,9 @@ Cada muestra del Arduino es un instante con un valor por sensor:
 ```
 
 - `t_ms` = `millis()` del Arduino (entero, milisegundos).
-- `valor_ADC` ∈ [0, 1023] (lectura del convertidor de 10 bits).
+- `valor_ADC` ∈ [0, 4095] con la ESP32-S3 (ADC de 12 bits); era [0, 1023] con el Arduino
+  legacy (10 bits). Ojo: el umbral de pendiente (7.5 u/s) se calibró con los CSV de
+  `datasets/`, grabados con el Arduino; con la ESP32 hay que recalibrarlo.
 
 Trabajamos **por canal** (cada sensor por separado). Para un canal, una ventana es
 una secuencia de pares `(t_i, y_i)`, con el tiempo pasado a **segundos**:

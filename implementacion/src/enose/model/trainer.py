@@ -33,6 +33,7 @@ from enose.config import (
     GROUP_BY, LABEL_COLUMN, ML_CONFIG, NON_FEATURE_COLUMNS, PCA_CONFIG,
 )
 from enose.features.perkey_pca import PerKeyPCA
+from enose.model.model_card import build_model_card, save_model_card
 from enose.pipeline.dataset import derive_groups, load_dataset, validate_dataset
 from enose.utils import create_output_directory, print_data_summary, setup_logging
 
@@ -350,6 +351,14 @@ class ModelTrainer:
                 pickle.dump(self.results, f)
 
             logger.info(f"Modelo guardado en: {output_dir / 'best_model.pkl'}")
+
+            # Ficha del modelo: si falla, el modelo ya está guardado y no se aborta
+            try:
+                card = build_model_card(self.df, self.dataset_path, list(self.X.columns),
+                                        self.results, self._cv_only)
+                logger.info(f"Ficha del modelo: {save_model_card(card, output_dir / 'best_model.pkl')}")
+            except Exception as e:
+                logger.warning(f"No se pudo escribir model_card.json: {e}")
 
             if FEATURE_MODE == "pca_signal":
                 logger.info("PCA incluido dentro de best_model.pkl (PerKeyPCA en el Pipeline); "

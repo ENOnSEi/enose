@@ -29,7 +29,7 @@ Al hacer stop (manual o por observer), el `MeasurementSet` no se cierra inmediat
 Se requiere que **todos** los sensores tengan pendiente por debajo del umbral (`OBSERVER_SLOPE_THRESHOLD`). Un solo sensor fuera de umbral mantiene el sistema en espera.
 
 ### Criterio de stop de medicion
-El stop requiere que se cumplan **ambas** condiciones: (1) han transcurrido al menos `OBSERVER_MIN_MEDICION_SECONDS` (30s por defecto) y (2) la pendiente de todos los sensores es estable. Si los sensores se estabilizan antes de los 30s, la medicion continúa hasta completarlos. Si no se estabilizan, la medicion no para aunque supere los 30s.
+La medicion para cuando la señal lleva **estable de forma continua** al menos `min_medicion_seconds` (`OBSERVER_MIN_MEDICION_SECONDS`, 30s por defecto; se puede pasar por Sample en `/serial/start`). "Estable" lo decide el analizador según `OBSERVER_POLICY` (por defecto, todos los sensores), y en medicion cada sensor tiene que haber subido antes de poder estabilizarse (`require_rise`). Cualquier inestabilidad reinicia la cuenta: no basta con que hayan pasado 30s desde el inicio y la señal esté estable en ese momento. Si la señal no llega a estabilizarse, la medicion no para (no hay timeout).
 
 ### Timeout de medicion
 Si la fase de `medicion` no se estabiliza, la medicion no termina nunca. **Pendiente de implementar junto con WebSockets**, igual que el timeout de base.

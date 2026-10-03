@@ -20,7 +20,7 @@ cada paso del preprocesado deja de ser magia y se vuelve inevitable.
 | **RL** | resistencia de carga | resistencia fija en serie con el sensor |
 | **Vc** | voltaje de circuito | alimentación del divisor (en mi placa, 5 V) |
 | **Vout** | tensión de salida | lo que mide el ADC, sobre RL |
-| **ADC** | conversor A/D | 0–1023 (10 bits), proporcional a Vout |
+| **ADC** | conversor A/D | 0–1023 (10 bits) en el Arduino legacy; 0–4095 (12 bits) en la ESP32-S3. Proporcional a Vout |
 | **VOC** | compuesto orgánico volátil | los gases del vino (etanol, ésteres…) |
 | **CV** | coeficiente de variación | σ/media; mide reproducibilidad |
 | **MOS** | metal-oxide semiconductor | el tipo de sensor (SnO₂) de los TGS |
@@ -124,6 +124,13 @@ Rs      (1023 − ADC_gas)  / ADC_gas
 ──  =  ───────────────────────────────
 R0      (1023 − ADC_base) / ADC_base
 ```
+
+> **⚠️ Aplica al Arduino legacy, no tal cual a la ESP32-S3.** Este desarrollo supone ADC de
+> 10 bits (fondo de escala 1023) y referencia del ADC = los mismos 5 V que alimentan el
+> divisor. En la ESP32-S3 el ADC es de 12 bits (0–4095) y su referencia/atenuación (~3.3 V)
+> no tiene por qué coincidir con Vc, así que Vc no se cancela sin más. La fórmula real
+> depende del esquema eléctrico de la placa (pendiente: punto 3 de «Obstáculos de
+> reproducibilidad»). Los ejemplos numéricos de este documento siguen usando 1023.
 
 > **Lo que NO me puedo saltar:** el término `(1023 − ADC)`. *Eso* es la conversión.
 > No necesito conocer Vc ni RL, pero `ADC_gas/ADC_base` a secas está mal.

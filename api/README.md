@@ -1,12 +1,16 @@
 # ENose API
 
-Lee datos del Arduino por puerto serie y los almacena en PostgreSQL.
+Backend FastAPI de la nariz electrónica. Recibe por **MQTT** las lecturas de la ESP32-S3
+(4 sensores TGS a 5 Hz), las guarda en PostgreSQL y automatiza el ciclo
+base → medición → cooldown con un *observer*. También expone endpoints de export,
+estadísticas, PCA y detección de outliers para el pipeline de ML (`../implementacion`).
 
 ## Requisitos
 
 - Python 3.13+, [uv](https://docs.astral.sh/uv/)
-- PostgreSQL en local
-- Arduino conectado por USB
+- PostgreSQL (local, el de `compose.yml` o Neon)
+- Broker MQTT (Mosquitto, ver `../mosquitto/` y `../compose.yml`)
+- ESP32-S3 con el firmware de `../esp32s3/` publicando en el broker
 
 ## Configuración
 
@@ -14,31 +18,32 @@ Lee datos del Arduino por puerto serie y los almacena en PostgreSQL.
 cp .env.example .env
 ```
 
-Edita `.env` con tus valores:
+Edita `.env`. `DATABASE_URL` es **obligatoria** (no tiene valor por defecto) y debe usar el driver
+asyncpg:
 
 ```
 DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/enose_db
-SERIAL_PORT=/dev/ttyACM0   # o /dev/ttyUSB0
-SERIAL_BAUD=9600
+# Neon: postgresql+asyncpg://USER:PASSWORD@HOST/neondb?ssl=require   (no sslmode/channel_binding)
+BOARD_TRANSPORT=mqtt            # "ws" = WebSocket directo a la placa (legacy)
+MQTT_BROKER_HOST=localhost      # en compose: mosquitto
+MQTT_BROKER_PORT=1883
 ```
 
-Si el puerto serie da error de permisos:
-
-```bash
-sudo chmod a+rw /dev/ttyACM0
-```
+El resto de claves (topics MQTT, `SENSOR_NAMES`, `OBSERVER_*`) están en `.env.example`.
+Con `podman compose` (`make up` desde la raíz) `DATABASE_URL` y `MQTT_BROKER_HOST` ya vienen
+definidos con los nombres de servicio.
 
 ## Arrancar la API
 
 ```bash
-uv run uvicorn main:app --reload
+uv run uvicorn main:app --reload      # o, desde la raíz: make api-dev
 ```
 
 Al arrancar:
 - Crea las tablas si no existen (bootstrap para una BD nueva)
 - Sincroniza el esquema con Alembic: si la revisión aplicada en la BD queda por detrás o por delante de la que conocen los ficheros de `migrations/` de la rama/commit actual, aplica `upgrade`/`downgrade` automáticamente (ver sección "Migraciones" más abajo)
-- Puebla la tabla `sensors` con los sensores configurados
-- Inicia el observer y el drain en background (el lector serial arranca al llamar a `/serial/start`)
+- Puebla la tabla `sensor` con `SENSOR_NAMES`
+- Inicia el observer y el drain en background. **Nada se mide hasta `POST /serial/start`**: el cliente MQTT solo se conecta al hacer start y se desconecta en stop.
 
 ## Migraciones (Alembic)
 
@@ -58,104 +63,84 @@ En cada arranque, `sync_schema_with_alembic()` (`app/db/migrations_sync.py`) com
 
 ## CLI
 
-Desde otra terminal, en la carpeta `api/`:
+Desde otra terminal, en la carpeta `api/` (con la API arrancada):
 
 ```bash
-python cli.py                        # menú interactivo
-python cli.py start "nombre"         # iniciar sesión con nombre
-python cli.py start                  # iniciar sesión (pide el nombre interactivamente)
-python cli.py stop                   # detener la lectura
-python cli.py status                 # estado actual y total de lecturas
-python cli.py base                   # forzar estado base (solo pruebas)
-python cli.py medicion               # forzar estado medicion (solo pruebas)
+python cli.py                              # menú interactivo
+python cli.py start "nombre" 3             # iniciar un Sample de 3 repeticiones
+python cli.py start                        # pide nombre y repeticiones
+python cli.py stop                         # detener
+python cli.py status                       # estado de la conexión y la cola
+python cli.py base | medicion | cooldown   # forzar estado (solo pruebas)
 ```
 
 ## API REST
 
-Documentación interactiva en `http://localhost:8000/docs`
+Documentación interactiva en `http://localhost:8000/docs`.
 
-| Método | Ruta                        | Descripción                          |
-|--------|-----------------------------|--------------------------------------|
-| GET    | `/health`                   | Estado de la API                     |
-| GET    | `/serial/status`            | Estado del lector serial             |
-| POST   | `/serial/start`             | Iniciar lectura (crea MeasurementSet)|
-| POST   | `/serial/stop`              | Detener lectura                      |
-| PUT    | `/serial/estado/{estado}`   | Cambiar estado (`base` o `medicion`) |
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/health` | Estado de la API |
+| GET | `/serial/status` | Estado de la conexión con la placa y de la cola |
+| POST | `/serial/start?name&n_repetitions&min_medicion_seconds` | Crea el Sample y la rep 1 y arranca la placa (400 si ya está midiendo) |
+| POST | `/serial/stop` | Parada manual; cierra MS/Sample cuando se vacía la cola |
+| PUT | `/serial/estado/{base\|medicion\|cooldown}` | Forzar estado (solo pruebas) |
+| POST | `/sensors/{name}/rename` | Sustitución física de un sensor (archiva la fila antigua) |
+| GET | `/export/samples`, `/export/samples/{id}` | Listado y detalle de Samples |
+| GET | `/export/recordings[/{ms_id}]` | Grabaciones pivotadas (lo consume el ML) |
+| GET | `/export/readings` | Export filtrado por estado/estabilidad/sample/MS |
+| GET | `/export/stable-means[/chart]` | Media estable por sensor y MS |
+| GET | `/export/pca[/chart]` | PCA 2D entre Samples |
+| GET | `/measurement-sets/{id}/stats`, `/samples/{id}/stats` | Estadísticas y diagnóstico por fase |
+| POST | `/samples/{id}/detect-outliers?iqr_factor&min_reps&force` | Etiqueta reps outlier por sensor (Tukey); guarda método y fecha en `Sample.outlier_detection` |
 
 ## Arquitectura
 
 ### Base de datos
 
 ```
-MeasurementSet          Sensor
-id, started_at,         id, name, pin
-stopped_at              (tgs2620/A3, ...)
-     │
-     │ FK
-     ▼
-  Reading  ──── ReadingValue ──── FK ──→ Sensor
-  id, arduino_ms,    reading_id
-  estado,            sensor_id
-  captured_at        value
+Sample 1─< MeasurementSet 1─< Reading 1─< ReadingValue >─1 Sensor
+Sample 1─< Reading            (las lecturas de cooldown no tienen measurement_set_id)
 ```
 
-`Reading` agrupa los 4 valores de una muestra del Arduino. `ReadingValue` tiene una fila por sensor
-por muestra. `MeasurementSet` agrupa todas las lecturas de una sesión (de start a stop).
+- `Sample`: una sustancia medida N veces seguidas (`name`, `n_repetitions`, `completed_repetitions`, `outlier_detection`).
+- `MeasurementSet`: una repetición base→medición (`repetition_number`, `stopped_at`, `outlier_sensors`). `stopped_at = NULL` ⇒ incompleta.
+- `Reading`: una lectura de la placa (`arduino_ms`, `estado`, `is_stable`). `ReadingValue`: una fila por sensor.
+- `Sensor`: `name` único, `retired_at`. El emparejamiento con las lecturas es **por nombre**; el
+  cableado (pines ADC) vive solo en el firmware.
 
-Para añadir sensores nuevos, actualiza `SENSOR_NAMES` en `.env` (se siembran automáticamente en `sensors`
-al arrancar). El emparejamiento con las lecturas del ESP32 es por nombre, no por posición. El cableado
-físico (pines ADC) es responsabilidad exclusiva del firmware — no se guarda en la base de datos.
+Reglas de dominio completas en [CONTEXT.md](CONTEXT.md).
 
 ### Flujo de datos en runtime
 
 ```
-Arduino (USB)
-    │ readline() — hilo bloqueante
-    ▼
-serial_reader (thread)
+ESP32-S3 ──MQTT enose/readings (5 Hz)──► board_mqtt (hilo de paho-mqtt)
     │ put(arduino_ms, {tgs2620: v, ...}, estado)
     ▼
-queue.Queue  ←── thread-safe bridge
-    │ drain() cada 500ms
+queue.Queue  ←── puente thread-safe
+    │ drain() cada 500 ms
     ▼
-_drain_to_db (async task)
-    │ Reading + ReadingValues → INSERT
+_drain_to_db (tarea async) ── Reading + ReadingValue → INSERT
+    │                          (cualquier valor 0 ⇒ fallo de sensor: para todo)
     ▼
-PostgreSQL
-    │ SELECT últimas N lecturas
+PostgreSQL ── últimas N lecturas ──► Observer (poll cada 1 s) ── SignalAnalyzer
+    │
     ▼
-Observer (async task, poll cada 1s)
-    │ SignalAnalyzer.update() → transición confirmada
-    ▼
-serial_reader.set_estado() / .stop()
+board.set_estado() / stop() ──MQTT enose/commands──► ESP32 (conmuta relés)
 ```
 
-La `queue.Queue` actúa como puente entre el hilo bloqueante de pyserial (síncrono) y el event loop
-de FastAPI (async). El hilo escribe, el drain async lee — sin bloquear ninguno de los dos.
-
-### Estado compartido entre capas
-
-- `serial_reader` — estado del hilo (running, estado, queue). Protegido con `threading.Lock`.
-- `measurement_state` — ID del `MeasurementSet` activo. Lo escribe el router en `/start`, lo leen el drain y el observer.
-- `sensor_cache` — `{nombre: id}` construido al arrancar desde DB. Solo lectura, no necesita lock.
-
-### Ciclo de vida de una sesión
+### Ciclo de vida de un Sample
 
 ```
-POST /serial/start
-  → crea MeasurementSet en DB
-  → measurement_state.set_current(id)
-  → serial_reader.start()
+POST /serial/start → Sample + MeasurementSet rep 1 → board.start()
+  base:      espera a que la señal se estabilice → set_estado("medicion")
+  medicion:  cada sensor debe subir y luego estabilizarse; para cuando la señal lleva
+             estable de forma CONTINUA ≥ min_medicion_seconds (30 s por defecto)
+             → cierra el MeasurementSet
+  cooldown:  (si quedan reps) espera a que se estabilice → siguiente rep (vuelve a base)
+  última rep: cierra el Sample y board.stop()
 
-          [observer en waiting]
-          ← SlopeAnalyzer mide pendiente base
-          ← todos estables → serial_reader.set_estado("medicion")
-          [observer en measuring]
-          ← espera 30s o nueva estabilización
-          → MeasurementSet.stopped_at = now()
-          → serial_reader.stop()
-
-  También: POST /serial/stop (parada manual)
+También: POST /serial/stop (parada manual) o un valor 0 en cualquier sensor (fallo).
 ```
 
 ### Analizador de señal (`SignalAnalyzer`)
@@ -222,7 +207,7 @@ estabiliza nunca. **Reejecuta la calibración cuando recojas más grabaciones.**
 | `OBSERVER_POLICY`               | all     | Política multi-sensor: `all` / `any` / `majority` |
 | `OBSERVER_FETCH_LIMIT`          | 300     | Nº de lecturas recientes que se traen de la BD para cubrir la ventana |
 | `OBSERVER_POLL_INTERVAL`        | 1.0     | Segundos entre cada comprobación del observer    |
-| `OBSERVER_MIN_MEDICION_SECONDS` | 30.0    | Tiempo mínimo en medicion. El stop requiere AMBAS: mínimo transcurrido Y pendiente estable |
+| `OBSERVER_MIN_MEDICION_SECONDS` | 30.0    | Segundos de estabilidad **continua** exigidos en medicion antes de parar (cualquier inestabilidad reinicia la cuenta). Se puede pasar por Sample en `/serial/start` |
 
 `OBSERVER_SLOPE_THRESHOLD`, `OBSERVER_HYSTERESIS` y `OBSERVER_CONFIRM_SECONDS` necesitarán
 calibración con datos reales. El log del observer traza pendiente y estado por canal en cada

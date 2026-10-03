@@ -1,8 +1,8 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import case, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +76,8 @@ class SampleOutliersResponse(BaseModel):
     sample_id: int
     sample_name: str
     measurement_sets: list[MeasurementSetOutliers]
+    # Cómo y cuándo se etiquetó (lo mismo que se guarda en Sample.outlier_detection)
+    detection: dict[str, Any] | None = None
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -324,12 +326,18 @@ async def get_sample_stats(
 
 @router.post("/samples/{sample_id}/detect-outliers", response_model=SampleOutliersResponse)
 async def detect_outliers(
-    sample_id: int, session: AsyncSession = Depends(get_session)
+    sample_id: int,
+    iqr_factor: float = Query(1.5, gt=0, description="Factor k del rango de Tukey [Q1 - k·IQR, Q3 + k·IQR]"),
+    min_reps: int = Query(5, ge=3, description="Mínimo de measurement sets completos para etiquetar"),
+    force: bool = Query(False, description="Re-etiquetar aunque el sample ya tenga outliers marcados"),
+    session: AsyncSession = Depends(get_session),
 ):
     """Marca, por sensor, qué repeticiones (MeasurementSet) de un sample son
     outliers respecto a sus hermanas, usando el rango de Tukey
-    ([Q1 - 1.5·IQR, Q3 + 1.5·IQR]) sobre el delta estable (medición - base) de
-    cada sensor. Persiste el resultado en MeasurementSet.outlier_sensors."""
+    ([Q1 - k·IQR, Q3 + k·IQR], k = ``iqr_factor``) sobre el delta estable
+    (medición - base) de cada sensor. Persiste el resultado en
+    MeasurementSet.outlier_sensors, y el método/parámetros/fecha en
+    Sample.outlier_detection. Con ``force=true`` sobrescribe un etiquetado previo."""
     sample = await session.get(Sample, sample_id)
     if not sample:
         raise HTTPException(404, f"Sample {sample_id} not found")
@@ -350,18 +358,18 @@ async def detect_outliers(
             sample_id=sample_id, sample_name=sample.name, measurement_sets=[]
         )
 
-    if len(ms_list) < 5:
+    if len(ms_list) < min_reps:
         raise HTTPException(
             400,
             f"Sample {sample_id} has only {len(ms_list)} completed measurement sets; "
-            "at least 5 are required to detect outliers",
+            f"at least {min_reps} are required to detect outliers",
         )
 
-    if any(ms.outlier_sensors for ms in ms_list):
+    if not force and any(ms.outlier_sensors for ms in ms_list):
         raise HTTPException(
             400,
             f"Sample {sample_id} already has measurement sets labeled as outliers; "
-            "re-running detect-outliers is not allowed",
+            "use force=true to re-run detect-outliers",
         )
 
     sensor_map = await _get_sensor_map(session)
@@ -388,7 +396,7 @@ async def detect_outliers(
     for sensor_name, values in deltas_by_sensor.items():
         q1, q3 = np.percentile(values, [25, 75])
         iqr = q3 - q1
-        bounds[sensor_name] = (q1 - 1.5 * iqr, q3 + 1.5 * iqr)
+        bounds[sensor_name] = (q1 - iqr_factor * iqr, q3 + iqr_factor * iqr)
 
     result: list[MeasurementSetOutliers] = []
     for ms in ms_list:
@@ -408,8 +416,21 @@ async def detect_outliers(
             )
         )
 
+    sample.outlier_detection = {
+        "method": "tukey",
+        "scale": "delta_stable",  # media estable de medición − media de base, en ADC
+        "iqr_factor": iqr_factor,
+        "min_reps": min_reps,
+        "n_measurement_sets": len(ms_list),
+        "forced": force,
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    session.add(sample)
     await session.commit()
 
     return SampleOutliersResponse(
-        sample_id=sample_id, sample_name=sample.name, measurement_sets=result
+        sample_id=sample_id,
+        sample_name=sample.name,
+        measurement_sets=result,
+        detection=sample.outlier_detection,
     )

@@ -129,7 +129,10 @@ GROUP_BY: Literal["sample", "recording"] = "sample"
 
 @dataclass(frozen=True)
 class SignalConfig:
-    # El Arduino muestrea cada 250 ms → 4 Hz.
+    # 4 Hz = Arduino legacy (cada 250 ms). La ESP32-S3 va a 5 Hz (cada 200 ms):
+    # las ventanas por nº de muestras quedan desplazadas con datos de la API.
+    # NO cambiar sin reentrenar (altera las features); ver punto 4 de
+    # «Obstáculos de reproducibilidad» (cortar por arduino_ms).
     sampling_frequency: float = 4.0
     savgol_window: int = 9           # debe ser impar; ~2 s a 4 Hz
     savgol_polyorder: int = 3

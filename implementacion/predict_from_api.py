@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from enose.config import DATA_PROCESSED_DIR
 from enose.io.api import DEFAULT_API, fetch_recording, fetch_recordings, recording_to_features
+from enose.model.model_card import check_model_card, describe_model_card
 from enose.utils import setup_logging
 
 logger = setup_logging(__name__)
@@ -49,7 +50,14 @@ def load_model(path: Path | None = None):
         logger.error(f"Modelo no encontrado: {path}. Entrena primero con train_from_api.py")
         sys.exit(1)
     with open(path, "rb") as f:
-        return pickle.load(f)
+        model = pickle.load(f)
+    # Solo informa: una ficha ausente o desfasada no impide predecir
+    summary = describe_model_card(path)
+    if summary:
+        logger.info(summary)
+    for warning in check_model_card(path, model):
+        logger.warning(warning)
+    return model
 
 
 def features_to_row(model, features: dict[str, float]) -> pd.DataFrame:
