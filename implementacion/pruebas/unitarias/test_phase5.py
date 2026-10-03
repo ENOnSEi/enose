@@ -8,6 +8,8 @@ Requiere: haber generado el dataset con main.py --phase 4
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from enose.config import DATA_PROCESSED_DIR, DATASET_MAESTRO_PATH
@@ -20,8 +22,9 @@ print(f"\nDataset: {DATASET_MAESTRO_PATH}")
 print(f"Existe:  {DATASET_MAESTRO_PATH.exists()}")
 
 if not DATASET_MAESTRO_PATH.exists():
-    print("\nDataset no encontrado. Ejecuta: python main.py --phase 4")
-    sys.exit(1)
+    # skip (no sys.exit): un exit al importar tumba la recogida de toda la suite
+    pytest.skip("Dataset no encontrado. Ejecuta: python main.py --phase 4",
+                allow_module_level=True)
 
 
 def test_model_training():
