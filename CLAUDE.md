@@ -123,7 +123,7 @@ PlatformIO, `env:esp32-s3-devkitc-1`, lib `PubSubClient`. `include/secrets.h` (g
 ## Pipeline ML (`implementacion/`)
 Arquitectura Spec → Design → Dev (`SPEC_DESIGN_DEV.md`): `spec/contracts/` (Protocols), `spec/schemas/` (Pydantic), `diseño/adr/` + `design/adr/` (ADRs), `src/enose/` (implementación). Scripts añaden `src` a `sys.path`.
 - Entrada legacy: CSV `data,v20,v11,v02,v00,estado` con fases `inicio` (descartar) / `base` (R0) / `medicion`. Etiqueta = nombre de fichero (`SUBSTANCE_LABELS` en `config.py`).
-- Señal: Savitzky-Golay (ventana 9, orden 3) + normalización fraccional `(R0 − Rs)/R0`. Ventanas temporales desde el inicio de medición: 0–5, 5–15, 15–40 s. `sampling_frequency=4.0` (heredado del Arduino a 4 Hz; la ESP32 va a 5 Hz — tenerlo en cuenta).
+- Señal: Savitzky-Golay (ventana 9, orden 3) + normalización fraccional `(Rs − R0)/R0` sobre el ADC crudo (no sobre la resistencia real). Ventanas temporales desde el inicio de medición: 0–5, 5–15, 15–40 s. `sampling_frequency=4.0` (heredado del Arduino a 4 Hz; la ESP32 va a 5 Hz — tenerlo en cuenta).
 - Features handcrafted: max, AUC, slope por sensor×ventana + ratios entre pares (`SENSOR_RATIO_PAIRS`) → ~60 features. Modo alternativo `FEATURE_MODE='pca_signal'` (PerKeyPCA).
 - Clasificador activo: `CLASSIFIER='lda'` (LDA con shrinkage, ganó en `compare_models.py`); `svm` disponible. `StandardScaler → clf`, GridSearchCV + StratifiedGroupKFold, métrica `balanced_accuracy`. Grupo de CV según `GROUP_BY` (`config.py`): `'sample'` (defecto; columna `Grupo`=`sample_<id>` que escribe `train_from_api.py`, todas las reps de un Sample en el mismo lado del split) o `'recording'` (una rep = un grupo, cifra optimista). CSV legacy sin `Grupo` caen a `'recording'`. Lógica común en `pipeline/dataset.py::derive_groups`. El trainer reporta `cv_score_grouped` vs `cv_score_per_row` (`cv_inflation`) y falla con mensaje explicativo si una clase tiene un solo Sample → necesita ≥2 Samples por clase.
 - Desde la API (camino actual): `train_from_api.py [--sample-ids …]`, `predict_from_api.py --ms-id N | --sample-id N` (soft vote entre reps), `visualize_from_api.py`, `check_repeatability.py` (reps sospechosas por distancia en z-score), `reproducibility_report.py [--scale frac|delta]` (CV dentro/entre Samples, ICC de tanda, tendencia rep1→repN, CV de R0; lógica en `enose/report/reproducibility.py`, salida en `datos/procesados/reproducibilidad/`), `confounder_test.py [--only-first-rep]` (entrena solo con features de la fase base y test de permutación por Sample: si acierta por encima del azar, el modelo aprende el día y no el olor; lógica en `enose/model/confounder.py`, salida `confounder_test.json`). Punto único de extracción: `enose/io/api.py::recording_to_features` (mismo código en train e inferencia). Default API `http://127.0.0.1:8000`.
@@ -137,6 +137,33 @@ Arquitectura Spec → Design → Dev (`SPEC_DESIGN_DEV.md`): `spec/contracts/` (
 - `schemas/reading.py::SensorReadingOut` es legacy (columnas fijas v20…).
 - Lecturas con cualquier valor 0 abortan la medición entera.
 - En `_drain_to_db`, sensores de la lectura no presentes en `sensor_cache` se ignoran silenciosamente.
+- `POST /sensors/{name}/rename` **requiere reiniciar la API**: `sensor_cache` se construye una vez en el lifespan, así que hasta reiniciar las lecturas nuevas se guardan con el `sensor_id` archivado (el docstring dice lo contrario). Las lecturas del sensor archivado salen a 0 en los exports.
+- `/export/readings?estado=cooldown` devuelve listas vacías: las lecturas de cooldown tienen `measurement_set_id` NULL y el endpoint selecciona por MS.
+- Stats (`/measurement-sets/{id}/stats`): min/max/media son de los **últimos 5 s** de cada fase; `slope_estimate` = delta/5 (no es una pendiente medida); `transition_duration_s` = duración de la **base** (primera lectura base → primera de medición).
+
+## Reproducibilidad: estado y siguientes pasos (actualizado 2026-10-03)
+Línea de trabajo abierta. Al retomarla, leer esto primero.
+
+**Documentos locales** (raíz del repo, todos en `.gitignore`, no están en GitHub; se pasan al equipo a mano):
+- `Obstáculos Reproducibilidad.odt`: **plan maestro**, 24 puntos con prioridad, estado (resuelto/parcial/pendiente/bloqueado), qué se hizo y cómo. Mantenerlo al día cuando se cierre un punto (se edita reescribiendo `content.xml`; LibreOffice sirve para validar/convertir).
+- `Apuntes ENose.pdf` (funcional, foco en análisis y decisiones) y `Guía API ENose.pdf` (uso de cada endpoint). Generadores en `notas/generadores/` (ver su `LEEME.md`). Si cambia un endpoint o el análisis, regenerarlos.
+
+**Rama** `reproducibilidad-quick-wins` (subida; PR a `main` pendiente). Commits: `0598363` (puntos 23, 19, 9), `808f271` (8, 17, 7 parcial, 21) y el de gráficos (`routers/charts.py`). El usuario hace los commits él mismo: darle comandos `git add` + mensaje.
+
+**Hecho:** 9 confounder test · 8 informe de reproducibilidad · 17 model card · 7 outliers configurables + `sample.outlier_detection` (falta la escala Rs/R0) · 19 credenciales fuera del código (contraseña de Neon **sin rotar**: el usuario decidió seguir con la antigua de momento) · 21 docs · 23 test_phase5 · gráficos nuevos (curva de rep, reps superpuestas, deriva de R0, huella radar).
+
+**Pendiente crítico, en orden:**
+1. Ejecutar `confounder_test.py` (con y sin `--only-first-rep`) y `reproducibility_report.py` con los datos reales de Neon, y anotar el resultado en el `.odt`. **Aún no se ha hecho**: es la línea base para medir mejoras.
+2. Protocolo y campaña (puntos 12–15): procedimiento escrito, muestra de referencia por sesión, orden aleatorio, ≥5 sesiones en días distintos. No es código; es lo que de verdad demuestra reproducibilidad.
+3. Esquema eléctrico de la placa → fórmula de Rs (punto 3) y pines reales del firmware (20). Bloqueado: hace falta que el equipo lo aporte.
+4. 4 Hz frente a 5 Hz y R0 por mediana de base estable (puntos 4 y 5). Cambian features → reentrenar; hacerlo tras el punto 1 para comparar.
+5. Sesión, catálogo de sustancias, temperatura/humedad, `Sample.config` (puntos 1, 2, 11, 16). Requieren decisiones del equipo (ya se les ha planteado por WhatsApp).
+6. Recalibrar `OBSERVER_SLOPE_THRESHOLD` con datos de la ESP32 (se calibró con el Arduino).
+7. Menores: rotar contraseña de Neon, bug 24 (predict con 2 clases), bug del rename de sensor (no está en el `.odt`; candidato a punto 25), PCA por repetición (punto 6), corrección de deriva (10), uv en el ML (18), export sin columnas fijas (22).
+
+**Entorno:** `api/.env` existe y apunta a **Neon** (credencial antigua, formato asyncpg). Neon estaba en la revisión `6c0cde90f026` con 77 Samples el 2026-10-03; el primer arranque de la API desde esta rama aplica `a3f1c9e2b7d4` (columna nueva, compatible con `main`). No aplicar migraciones en Neon sin que el usuario lo decida.
+
+**Cómo probar sin tocar Neon:** Postgres desechable con `pgserver` (solo tiene wheels hasta Python 3.12: `uv run --no-project --python 3.12 --with pgserver python -c "import pgserver; print(pgserver.get_server(r'<dir>', cleanup_mode=None).get_uri())"`), y ejecutar la API o los scripts con `DATABASE_URL=postgresql+asyncpg://postgres@127.0.0.1:<puerto>/postgres`. Pararlo con el `pg_ctl.exe` del paquete (`-D <dir> stop`). Tests del ML: `uv run --no-project --python 3.13 --with-requirements requirements.txt --with pytest python -m pytest` desde `implementacion/` (55 tests).
 
 ## Historial reciente (para contexto)
-Commit directo en main `11653b6`: validación agrupada por Sample (`GROUP_BY`, tests en `pruebas/unitarias/test_grouping.py`). PR #10 `outliers`: endpoint de detección de outliers + selector de MS para PCA y búsqueda por nombre. PR #9 `feature-bbdd-interface`: endpoints de export/stats. PR #8 `sensor-identity-cleanup`: Alembic + auto-reconciliación, rename de sensor, quitar `pin`. Antes: migración WS→MQTT, Makefile, compose con podman, PCA en la API. Ramas remotas: `fastapi-init`, `feature/model`, `joel`, `sensor-identity-cleanup`.
+Rama `reproducibilidad-quick-wins` (ver sección anterior). Commit directo en main `11653b6`: validación agrupada por Sample (`GROUP_BY`, tests en `pruebas/unitarias/test_grouping.py`). PR #10 `outliers`: endpoint de detección de outliers + selector de MS para PCA y búsqueda por nombre. PR #9 `feature-bbdd-interface`: endpoints de export/stats. PR #8 `sensor-identity-cleanup`: Alembic + auto-reconciliación, rename de sensor, quitar `pin`. Antes: migración WS→MQTT, Makefile, compose con podman, PCA en la API. Ramas remotas: `fastapi-init`, `feature/model`, `joel`, `sensor-identity-cleanup`.
